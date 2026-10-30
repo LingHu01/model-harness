@@ -48,7 +48,7 @@ async def main():
         tools = {t.name: t for t in (await s.list_tools()).tools}
         print("reload:", {k: rl.get(k) for k in ("added", "removed", "changed")},
               "run description refreshed:", rl.get("catalog", "?") in tools["run"].description)
-        bad = payload(await s.call_tool("add_model", {"folder": "E:/nope"}))
+        bad = payload(await s.call_tool("add_model", {"folder": "plugins/nope"}))
         print("add_model bad folder:", bad.get("error", {}).get("code"))
         print("stop:", payload(await s.call_tool("stop", {})))
         print("after stop run:", payload(await s.call_tool("run", {"model": "echo-test", "function": "echo",

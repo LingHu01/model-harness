@@ -1,7 +1,7 @@
 # Short timers for tests/selftest.py (HARNESS_CONFIG points here). Separate data root and port.
-data_root: E:/harness-data-test
-weights_root: E:/harness-weights
-uv_cache_dir: E:/harness-data/uv-cache
+data_root: ../../../harness-data-test
+weights_root: ../../../harness-weights
+uv_cache_dir: ../../../harness-data/uv-cache
 default_python: "3.12"
 port: 8799
 timers:

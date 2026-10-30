@@ -179,7 +179,7 @@ def test_reload():
     root = Path(__file__).parent
     registry = root / "registry.yaml"
     saved = registry.read_bytes()
-    tmp = Path("E:/harness-data-test/tmp-plugin")
+    tmp = Path(http("GET", "/status")["data_root"]) / "tmp-plugin"
     shutil.rmtree(tmp, ignore_errors=True)
     shutil.copytree(root / "plugins" / "echo-test", tmp, ignore=shutil.ignore_patterns(".venv"))
     man = tmp / "manifest.yaml"
@@ -196,7 +196,7 @@ def test_reload():
         t.join()
         check("reload: allowed while a request runs", b["r"].get("event") == "result", str(b["r"])[:150])
 
-        r = http("POST", "/add_model", {"folder": "E:/harness-data-test/nope"})
+        r = http("POST", "/add_model", {"folder": "plugins/nope"})
         check("add_model: missing folder rejected", r.get("error", {}).get("code") == "invalid_input", str(r)[:150])
         (tmp / "env.lock").rename(tmp / "env.off")
         r = http("POST", "/add_model", {"folder": str(tmp)})

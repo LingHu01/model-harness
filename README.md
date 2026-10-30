@@ -41,7 +41,7 @@ You need Windows, [uv](https://docs.astral.sh/uv/), Python 3.12, and an NVIDIA G
 4. Add the shim to your MCP client, using your own absolute paths:
 
    ```json
-   { "command": "E:\\harness\\harness\\.venv\\Scripts\\python.exe", "args": ["E:\\harness\\harness\\shim\\shim.py"] }
+   { "command": "C:\\path\\to\\model-harness\\harness\\.venv\\Scripts\\python.exe", "args": ["C:\\path\\to\\model-harness\\harness\\shim\\shim.py"] }
    ```
 
 5. Put the plugin's weights under `weights_root`. For WeVisOne, download `tencent/WeVisOne-VL-2B` and `tencent/WeVisOne-VL-4B` from Hugging Face into `wevisone-vl-2b` and `wevisone-vl-4b`.
