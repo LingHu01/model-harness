@@ -75,6 +75,8 @@ class Scheduler:
         self.bench_locked = False
         self._wake = asyncio.get_running_loop().create_future()
         self._bg: set[asyncio.Task] = set()
+        self._watcher: asyncio.Task | None = None
+        self._bench_saved: dict = {}
 
     # ---- wake-ups -------------------------------------------------------------------
     def wake(self):
@@ -121,6 +123,8 @@ class Scheduler:
 
     def _kick(self, model: str):
         st = self.models[model]
+        if self._watcher is None or self._watcher.done():
+            self._watcher = asyncio.create_task(self._watch_pressure())
         if st.driver is None or st.driver.done():
             st.driver = asyncio.create_task(self._drive(model))
         self.wake()
@@ -323,6 +327,33 @@ class Scheduler:
         for r in batch:
             self._fail(r, err)
         self._spawn_bg(self._kill_worker(w, "runaway"))
+
+    # ---- VRAM pressure from other programs ---------------------------------------------------
+    async def _watch_pressure(self):
+        """Other programs can't ask us for VRAM, so watch for them filling the card and give back what is idle.
+        Runs only while a model is loaded: an idle harness polls nothing."""
+        while not self.stopping:
+            await asyncio.sleep(self.cfg.pressure_poll_s)
+            if not self.workers and not any(st.queue for st in self.models.values()):
+                return
+            if self._bench_saved:     # the bench fills the card on purpose
+                continue
+            try:
+                await self._relieve_pressure()
+            except Exception:         # a silent stop here would quietly keep VRAM from other programs
+                log.exception("VRAM watcher")
+
+    async def _relieve_pressure(self):
+        for device in {w.model.device for w in self.workers.values()}:
+            gpu = self.memory.gpu(device)
+            if gpu is None or gpu[1] >= self.cfg.pressure_free_gb:
+                continue
+            if any(w.state == W.LOADING and w.model.device == device for w in self.workers.values()):
+                continue              # our own load is what is using the memory
+            idle = [w for w in self._idle_lru(exclude="") if w.model.device == device]
+            if idle:
+                log.info("VRAM pressure (%.1f GB free): unloading idle %s", gpu[1], idle[0].name)
+                await self._kill_worker(idle[0], "pressure")
 
     # ---- R1 idle / R2 shell expiry -------------------------------------------------------
     def _arm_idle(self, w: W.Worker):
@@ -647,7 +678,6 @@ class Scheduler:
             raise HarnessError("unknown_model", f"unknown model {model!r}")
         if max_concurrency > 1 and not (m.batching or m.thread_safe):
             raise HarnessError("invalid_input", f"{model} declares neither batching nor thread_safe")
-        self._bench_saved = getattr(self, "_bench_saved", {})
         self._bench_saved.setdefault(model, (m.max_concurrency, m.function_max))
         m.max_concurrency, m.function_max = max(1, int(max_concurrency)), {}
         self.wake()

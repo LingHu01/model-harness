@@ -1,0 +1,9 @@
+# tests/pressure_test.py: a threshold no card can meet, so pressure is always on and nothing has to fill the VRAM.
+data_root: ../../../harness-data-test
+weights_root: ../../../harness-weights
+uv_cache_dir: ../../../harness-data/uv-cache
+default_python: "3.12"
+port: 8799
+memory:
+  pressure_free_gb: 999
+  pressure_poll: 1s

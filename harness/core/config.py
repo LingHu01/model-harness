@@ -51,6 +51,8 @@ class Config:
     cuda_context_gb: float
     bootstrap_ram_gb: float
     sampler_ms: int
+    pressure_free_gb: float
+    pressure_poll_s: float
     compile_vram_cap: float
     compile_min_runs: int
     log_max_bytes: int
@@ -96,6 +98,8 @@ def load(path: Path | None = None) -> Config:
         cuda_context_gb=float(mem.get("cuda_context_gb", 0.5)),
         bootstrap_ram_gb=float(mem.get("bootstrap_ram_gb", 2.0)),
         sampler_ms=int(mem.get("sampler_ms", 75)),
+        pressure_free_gb=float(mem.get("pressure_free_gb", 1.0)),
+        pressure_poll_s=duration(mem.get("pressure_poll"), 1.0),
         compile_vram_cap=float(comp.get("vram_cap", 0.70)),
         compile_min_runs=int(comp.get("min_runs_7d", 20)),
         log_max_bytes=int(logs.get("max_bytes", 5_000_000)),

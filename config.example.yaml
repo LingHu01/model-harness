@@ -26,6 +26,8 @@ memory:
   cuda_context_gb: 0.5
   bootstrap_ram_gb: 2.0             # RAM need before the first measured run
   sampler_ms: 75                    # external VRAM sampler, active during requests only
+  pressure_free_gb: 1.0             # another program filled the card: unload idle models below this
+  pressure_poll: 1s                 # how often, only while a model is loaded
 
 compile:
   vram_cap: 0.70
