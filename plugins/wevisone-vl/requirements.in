@@ -1,0 +1,15 @@
+# PyPI pins taken from Tencent/WeVisOne-VL@9a6bcd8 pyproject.toml (torch on cu128 for sm_120)
+accelerate==1.14.0
+huggingface-hub==1.21.0
+matplotlib==3.11.0
+numpy==2.2.6
+Pillow==12.2.0
+pycocotools==2.0.11
+qwen_vl_utils==0.0.14
+safetensors==0.8.0
+scipy==1.18.1
+supervision==0.31.0
+torch==2.11.0
+torchvision==0.26.0
+transformers==5.12.1
+wevisone-vl @ git+https://github.com/Tencent/WeVisOne-VL@9a6bcd85404505df0d05cfb5d97512ccacf35dee

@@ -1,0 +1,5 @@
+[
+  {"function": "detect", "inputs": {"image": "scene.png", "query": "red circle\nblue rectangle"}},
+  {"function": "detect", "inputs": {"image": "scene.png", "query": "red circle"}},
+  {"function": "detect", "inputs": {"image": "../sample.png", "query": "red circle"}}
+]

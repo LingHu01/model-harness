@@ -8,6 +8,7 @@ from pathlib import Path
 import yaml
 
 HARNESS_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = HARNESS_ROOT.parent  # plugins/ and the local config.yaml, registry.yaml live here
 VERSION = "0.1.0"
 
 _DUR = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(ms|s|m|h|d)?\s*$")
@@ -63,9 +64,9 @@ def _resolve(p, base: Path) -> Path:
 
 
 def load(path: Path | None = None) -> Config:
-    path = path or HARNESS_ROOT / "config.yaml"
+    path = path or REPO_ROOT / "config.yaml"
     if not path.exists():  # settings are per machine and untracked
-        raise SystemExit(f"{path} missing: copy {HARNESS_ROOT / 'config.example.yaml'} and edit it")
+        raise SystemExit(f"{path} missing: copy {REPO_ROOT / 'config.example.yaml'} and edit it")
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     base = path.parent
     t, mem, comp, logs = raw.get("timers", {}), raw.get("memory", {}), raw.get("compile", {}), raw.get("logs", {})

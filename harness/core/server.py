@@ -282,7 +282,7 @@ async def amain(cfg):
 
 
 def main():
-    cfg = config_mod.load(config_mod.HARNESS_ROOT / "config.yaml"
+    cfg = config_mod.load(config_mod.REPO_ROOT / "config.yaml"
                           if not os.environ.get("HARNESS_CONFIG") else config_mod.Path(os.environ["HARNESS_CONFIG"]))
     setup_logging(cfg)
     if sys.stdout is None or sys.stderr is None:  # pythonw: no console streams at all

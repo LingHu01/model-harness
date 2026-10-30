@@ -1,0 +1,4 @@
+{ "function": "refer", "base": "vision.detect", "base_version": 1,
+  "extras": { "max_new_tokens": {"type": "integer", "minimum": 16, "maximum": 8192, "default": 2048, "description": "Generation cap; raise for very crowded images."} },
+  "output_notes": "Boxes for the referred object(s); empty list if absent.",
+  "examples": [ { "input": {"image": "desk.jpg", "query": "the mug left of the laptop"}, "output": {"instances": [{"box": [88, 300, 210, 455], "label": "the mug left of the laptop"}]} } ] }

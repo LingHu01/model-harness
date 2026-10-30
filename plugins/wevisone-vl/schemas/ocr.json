@@ -1,0 +1,4 @@
+{ "function": "ocr", "base": "vision.ocr", "base_version": 1,
+  "extras": { "max_new_tokens": {"type": "integer", "minimum": 16, "maximum": 8192, "default": 2048, "description": "Generation cap; raise for very crowded images."} },
+  "output_notes": "One entry per word, in reading order as generated.",
+  "examples": [ { "input": {"image": "sign.jpg"}, "output": {"words": [{"text": "EXIT", "box": [30, 12, 140, 60]}]} } ] }

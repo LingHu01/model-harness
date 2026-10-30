@@ -1,0 +1,4 @@
+{ "function": "segment", "base": "vision.segment", "base_version": 1,
+  "extras": { "max_new_tokens": {"type": "integer", "minimum": 16, "maximum": 8192, "default": 2048, "description": "Generation cap; raise for very crowded images."}, "threshold": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.5, "description": "Alpha cut-off for the binary mask."} },
+  "output_notes": "mask = path to a binary PNG (image size) in out/; empty list if absent.",
+  "examples": [ { "input": {"image": "bag_042.jpg", "query": "the handbag"}, "output": {"instances": [{"box": [112, 80, 690, 910], "mask": "out/<id>/mask_0_0.png"}]} } ] }

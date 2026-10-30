@@ -1,0 +1,4 @@
+{ "function": "matting", "base": "vision.matting", "base_version": 1,
+  "extras": { "max_new_tokens": {"type": "integer", "minimum": 16, "maximum": 8192, "default": 2048, "description": "Generation cap; raise for very crowded images."} },
+  "output_notes": "alpha = path to an 8-bit alpha PNG (image size) in out/.",
+  "examples": [ { "input": {"image": "portrait.jpg", "query": "person"}, "output": {"instances": [{"box": [40, 10, 600, 1020], "alpha": "out/<id>/alpha_0_0.png"}]} } ] }

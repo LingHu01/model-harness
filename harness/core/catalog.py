@@ -92,7 +92,7 @@ class Catalog:
 
     def add_plugin(self, folder: str, tags: list[str] | None = None, manifest: str = "manifest.yaml") -> list[str]:
         """Validate a plugin folder and append it to the registry (one entry per variant). cap: tags come
-        from the manifest's functions; `tags` adds the rest (lang:, speed:, quality:, license:)."""
+        from the manifest's functions, the rest from its `tags:` (base and per variant) plus `tags`."""
         reg_dir = self.cfg.registry.parent
         path = (reg_dir / folder).resolve()
         mpath = path / manifest
@@ -115,7 +115,9 @@ class Catalog:
             raise ValueError(f"already registered: {', '.join(sorted(taken))}")
         entries = []
         for n in names:
-            e = {"name": n, "tags": caps + [t for t in tags or [] if t not in caps],
+            own = ((man.get("variants") or {}).get(n) or {}).get("tags") or []
+            extra = list(dict.fromkeys([*(man.get("tags") or []), *own, *(tags or [])]))
+            e = {"name": n, "tags": caps + [t for t in extra if t not in caps],
                  "folder": rel, "manifest": f"{rel}/{manifest}"}
             if man.get("variants"):
                 e["variant"] = n

@@ -1,0 +1,72 @@
+version: 1
+name: wevisone-vl
+description: Visual perception on one image (Qwen3-VL based); empty result when the target is absent.
+tags: [lang:en, lang:zh, license:apache-2.0]
+
+# One folder / env.lock / .venv / adapter shared by every variant; only weights (and limits) differ.
+# Each variant is still its own model in the catalog and its own process when loaded.
+variants:
+  wevisone-vl-2b:
+    tags: [speed:fast, quality:medium]
+    description: Visual perception on one image (2B, faster); empty result when the target is absent.
+    weights:
+      path: wevisone-vl-2b            # relative to weights_root in config.yaml
+  wevisone-vl-4b:
+    tags: [speed:medium, quality:high]
+    description: Visual perception on one image (4B, more accurate); empty result when the target is absent.
+    weights:
+      path: wevisone-vl-4b
+
+functions:
+  - name: detect
+    capability: vision.detect
+    summary: Boxes for every instance of one or more labels.
+    extras: [max_new_tokens]
+    schema: schemas/detect.json
+  - name: refer
+    capability: vision.detect
+    summary: Boxes for the object(s) a phrase refers to.
+    extras: [max_new_tokens]
+    schema: schemas/refer.json
+  - name: point
+    capability: vision.point
+    summary: One point per instance of the labels.
+    extras: [max_new_tokens]
+    schema: schemas/point.json
+  - name: count
+    capability: vision.count
+    summary: Count instances (with their boxes).
+    extras: [max_new_tokens]
+    schema: schemas/count.json
+  - name: segment
+    capability: vision.segment
+    summary: Box + binary mask per instance described in plain words.
+    extras: [max_new_tokens, threshold]
+    schema: schemas/segment.json
+  - name: matting
+    capability: vision.matting
+    summary: Box + soft alpha matte per instance (hair, fur, glass).
+    extras: [max_new_tokens]
+    schema: schemas/matting.json
+  - name: ocr
+    capability: vision.ocr
+    summary: Every word in the image with its box.
+    extras: [max_new_tokens]
+    schema: schemas/ocr.json
+
+runtime:
+  entry: adapter.py
+  device: cuda:0
+
+concurrency:
+  max: 1               # portable default; tools/bench saves the tuned value per machine
+  batching: true       # adapter implements run_batch (Tencent predict_batch)
+  thread_safe: false
+  vram_per_extra_gb: 0.0
+
+offload: none          # the upstream engine moves the whole model to one device
+compile:
+  eligible: false      # generate() loop; no engine export path yet
+
+limits:
+  runaway: 5m
