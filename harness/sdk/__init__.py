@@ -32,6 +32,12 @@ class Context:
     cache_dir: str = ""
     out_dir: str = ""                    # set per request
     extra: dict[str, Any] = field(default_factory=dict)
+    stage: Any = None                    # set per request by the runner
+
+    def report_stage(self, name: str) -> None:
+        """Tell the client what the request is doing, e.g. "generating" once loading and preprocessing are over."""
+        if self.stage:
+            self.stage(name)
 
     def out_path(self, name: str) -> str:
         """Path for an output file inside this request's out_dir."""
@@ -53,6 +59,10 @@ class BaseAdapter:
 
     def run_batch(self, function: str, inputs_list: list[dict], ctx: Context) -> list[dict]:
         return [self.run(function, i, ctx) for i in inputs_list]
+
+    def run_mixed(self, functions: list[str], inputs_list: list[dict], ctx: Context) -> list[dict]:
+        """One batch of different functions; used when the manifest sets concurrency.mixed_functions."""
+        return [self.run(f, i, ctx) for f, i in zip(functions, inputs_list)]
 
     def unload(self) -> None:
         pass

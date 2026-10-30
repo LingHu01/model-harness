@@ -16,6 +16,7 @@ timers:
   runaway: 5m                       # R5 default, per-model limits.runaway overrides
   retention: 24h                    # in/ and out/
   shutdown_grace: 30s               # stop(): max wait for running requests
+  batch_window: 50ms                # idle batching model: wait this long for more requests
 
 memory:
   need_margin: 0.10

@@ -61,6 +61,7 @@ runtime:
 concurrency:
   max: 1               # portable default; tools/bench saves the tuned value per machine
   batching: true       # adapter implements run_batch (Tencent predict_batch)
+  mixed_functions: true  # one batch can mix functions (adapter run_mixed)
   thread_safe: false
   vram_per_extra_gb: 0.0
 

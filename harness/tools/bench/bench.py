@@ -1,24 +1,37 @@
-"""Companion throughput tool (spec 15). Run manually against a running core:
+"""Find the largest useful batch for a model. Run manually against a running core:
 
-    harness-bench <model> [--max 16] [--burst 20] [--seconds 30] [--port 8765] [--yes]
+    harness-bench <model> [--max 16] [--rounds 3] [--seconds 30] [--port 8765] [--inputs bench.json] [--yes]
 
-Inputs: <plugin folder>/tests/bench/bench.json, a list of {"function": ..., "inputs": {...}};
-relative file paths inside inputs resolve against that folder.
-For C = 1, 2, 4, 8 ... --max it runs a burst of ~20 requests (or 30 s) with C in flight, measuring throughput,
-p50/p95 latency and VRAM peak. All steps run (only an OOM or a step that would exceed the GPU stops early);
-the recommendation is then chosen from all results: throughput >= 90 % of the best, lowest p95, tie -> lower C.
-Writes concurrency.max + vram_per_extra_gb to DATA_ROOT/state/tuning.yaml (per machine, untracked) ONLY after
+Inputs: <plugin folder>/tests/bench/bench.json, a list of {"function": ..., "inputs": {...}}; relative file paths
+inside inputs resolve against that folder. Use real inputs: VRAM per extra request grows with input size.
+
+A step sends exactly C requests together, so they run as one batch of C, and watches two flags live:
+- VRAM against what was free on the card when the bench started.
+- Memory bandwidth against the best seen so far. GPU utilization is not used: it reads high at low clock or
+  power too. Bandwidth falling means the GPU can't keep up with its memory, or is waiting on system RAM.
+Going over VRAM, or bandwidth collapsing, cancels the step at once: finishing it would only waste time. A smaller
+drop across the whole step fails it when it ends. Bandwidth only counts once the plugin reports "generating", so
+loading and preprocessing are never judged; a plugin that doesn't report it is judged on VRAM alone.
+
+Steps are chosen, not swept: C=1 is the baseline, then mid-range, then half of that. If the lower one matches
+mid-range, the limit is below it, so keep halving down. If mid-range is better, halve upward, up to where VRAM is
+predicted to run out. High steps are the slowest, so they only run once a lower step has shown they could help.
+A C predicted to exceed the available VRAM is never run.
+
+Saves concurrency.max + vram_per_extra_gb to DATA_ROOT/state/tuning.yaml (per machine, untracked) ONLY after
 explicit confirmation; the manifest is never edited. The core picks it up at once (/reload).
 """
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import statistics
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -30,6 +43,12 @@ import yaml  # noqa: E402
 from core import config as config_mod  # noqa: E402
 from core import tuning  # noqa: E402
 from sdk import nvml  # noqa: E402
+
+VRAM_MARGIN = 0.95    # of the VRAM free when the bench started
+BANDWIDTH_DROP = 15   # points below the best step: compute can't keep up with the memory
+COLLAPSE = 0.5        # live cancel: bandwidth under this share of the best step
+ABORT_WINDOW = 3.0    # seconds of generation it must stay there
+PLATEAU = 0.95        # throughput within this share of the best: a higher C gains nothing
 
 
 class Core:
@@ -45,18 +64,22 @@ class Core:
         except urllib.error.HTTPError as e:
             return json.loads(e.read())
 
-    def run(self, model, function, inputs, rid):
+    def run(self, model, function, inputs, rid, on_stage=None):
         body = json.dumps({"model": model, "function": function, "inputs": inputs, "request_id": rid}).encode()
         req = urllib.request.Request(self.base + "/run", body, method="POST")
         try:
             with urllib.request.urlopen(req, timeout=1800) as r:
-                return [json.loads(l) for l in r][-1]
+                ev = None
+                for line in r:
+                    ev = json.loads(line)
+                    if on_stage and ev.get("event") == "stage":
+                        on_stage()
+                return ev
         except urllib.error.HTTPError as e:
             return {"event": "error", **json.loads(e.read()).get("error", {})}
 
 
 def load_inputs(model_dir: Path, spec: Path | None = None) -> list[dict]:
-    """Tune on inputs like the real workload: VRAM per extra request scales with input size."""
     bdir = spec.parent if spec else model_dir / "tests" / "bench"
     spec = spec or bdir / "bench.json"
     if not spec.exists():
@@ -74,56 +97,199 @@ def others_active(core, model) -> bool:
     return any((s["queued"] or s["running"]) for n, s in st.items() if n != model)
 
 
-def burst(core, model, items, c, n, seconds, tag):
-    """n requests (or `seconds`) with c in flight. Returns (throughput, p50, p95, vram_peak, errors)."""
-    lat, peaks, errors = [], [], []
+class StepWatch:
+    """Samples memory bandwidth and VRAM while a step runs, and calls `abort(reason)` once when a flag trips."""
+
+    def __init__(self, index, limit_gb, base_used_gb, floor, abort, period=0.1):
+        self.index, self.limit_gb, self.base_used_gb = index, limit_gb, base_used_gb
+        self.floor, self.abort, self.period = floor, abort, period
+        self.bandwidth: list[int] = []
+        self.recent: list[int] = []      # this batch, since it started generating
+        self.generating = threading.Event()
+        self.reason: str | None = None
+        self._stop = threading.Event()
+
+    def __enter__(self):
+        self._t = threading.Thread(target=self._loop, daemon=True)
+        self._t.start()
+        return self
+
+    def __exit__(self, *_):
+        self._stop.set()
+        self._t.join()
+
+    def new_batch(self):
+        self.generating.clear()
+        self.recent = []
+
+    def _trip(self, reason):
+        self.reason = reason
+        self.abort(reason)
+
+    def _loop(self):
+        window = int(ABORT_WINDOW / self.period)
+        while not self._stop.wait(self.period):
+            u, mem = nvml.utilization(self.index), nvml.memory(self.index)
+            if u and self.generating.is_set():
+                self.bandwidth.append(u[1])
+                self.recent.append(u[1])
+            if self.reason:
+                continue
+            if mem and mem[2] - self.base_used_gb > self.limit_gb:
+                self._trip("vram")
+            elif self.floor is not None and len(self.recent) >= window:
+                if statistics.mean(self.recent[-window:]) < (self.floor + BANDWIDTH_DROP) * COLLAPSE:
+                    self._trip("bandwidth")
+
+
+def measure_step(core, model, items, c, rounds, seconds, index, limit_gb, base_used_gb, floor, tag) -> dict:
+    """`rounds` batches of exactly c requests. A tripped flag cancels the step at once."""
+    latencies, peaks, errors, ks = [], [], [], []
     lock = threading.Lock()
-    counter = iter(range(n))
     deadline = time.monotonic() + seconds
+    spilled, done, started = False, 0, time.perf_counter()
+    live: list[str] = []
 
-    def worker():
-        while time.monotonic() < deadline:
-            with lock:
-                i = next(counter, None)
-            if i is None:
-                return
-            it = items[i % len(items)]
-            t = time.perf_counter()
-            ev = core.run(model, it["function"], it["inputs"], f"bench-{tag}-{c}-{i}-{os.getpid()}")
-            dt = time.perf_counter() - t
-            with lock:
-                if ev["event"] == "result":
-                    lat.append(dt)
-                    peaks.append(ev["metrics"].get("vram_peak_gb") or 0.0)
-                else:
-                    errors.append(ev.get("code"))
+    def one(i, rid, gate):
+        nonlocal spilled
+        it = items[i % len(items)]
+        gate.wait()
+        t = time.perf_counter()
+        ev = core.run(model, it["function"], it["inputs"], rid, on_stage=watch.generating.set)
+        with lock:
+            if ev["event"] == "result":
+                latencies.append(time.perf_counter() - t)
+                m = ev["metrics"]
+                peaks.append(m.get("vram_peak_gb") or 0.0)
+                ks.append(m.get("k") or 1)
+                spilled = spilled or bool(m.get("vram_spill"))
+            else:
+                errors.append(ev.get("code"))
 
-    t0 = time.perf_counter()
-    threads = [threading.Thread(target=worker, daemon=True) for _ in range(c)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    wall = time.perf_counter() - t0
-    if not lat:
-        return 0.0, None, None, None, errors
-    lat.sort()
-    p95 = lat[min(len(lat) - 1, int(round(0.95 * (len(lat) - 1))))]
-    return len(lat) / wall, statistics.median(lat), p95, max(peaks), errors
+    def abort(reason):
+        print(f"  C={c}: {reason} flag tripped, cancelling the step")
+        for rid in list(live):
+            core.call("POST", f"/cancel/{rid}")
+
+    with StepWatch(index, limit_gb, base_used_gb, floor, abort) as watch:
+        for r in range(rounds):
+            watch.new_batch()
+            gate = threading.Barrier(c)
+            live[:] = [f"bench-{tag}-{c}-{r}-{i}-{os.getpid()}" for i in range(c)]
+            threads = [threading.Thread(target=one, args=(i + r * c, live[i], gate), daemon=True) for i in range(c)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            done += 1
+            if watch.reason or errors or spilled or (peaks and max(peaks) > limit_gb) or (r and time.monotonic() > deadline):
+                break
+    wall = time.perf_counter() - started
+    latencies.sort()
+    n = len(latencies)
+    return {"c": c, "tput": n / wall if wall else 0.0, "p95": latencies[int(round(0.95 * (n - 1)))] if n else None,
+            "vram": max(peaks, default=0.0), "bandwidth": statistics.mean(watch.bandwidth) if watch.bandwidth else None,
+            "k": max(ks, default=0), "rounds": done, "errors": errors, "spilled": spilled, "abort": watch.reason}
 
 
-def linear_slope(xs, ys) -> float:
-    if len(xs) < 2:
+# ---- search: only this part decides, so it can be tested on simulated curves --------------------------
+def tripped(row, limit_gb, floor=None) -> str | None:
+    """Why this step is past the maximum batch, or None."""
+    if row.get("abort"):
+        return row["abort"]
+    if row["errors"]:
+        return "errors"
+    if row["spilled"] or row["vram"] > limit_gb:
+        return "vram"
+    if floor is not None and row["bandwidth"] is not None and row["bandwidth"] < floor:
+        return "bandwidth"
+    return None
+
+
+def vram_slope(rows) -> float:
+    """GB per extra request, from the widest pair of steps that stayed on the card."""
+    if len(rows) < 2:
         return 0.0
-    mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
-    den = sum((x - mx) ** 2 for x in xs)
-    return max(0.0, sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / den) if den else 0.0
+    a, b = rows[0], rows[-1]
+    return max(0.0, (b["vram"] - a["vram"]) / (b["c"] - a["c"]))
 
 
-def recommend(rows):
-    best = max(r["tput"] for r in rows)
-    cands = [r for r in rows if r["tput"] >= 0.9 * best]
-    return min(cands, key=lambda r: (r["p95"], r["c"]))
+def predicted_top(rows, limit_gb, cmax) -> int:
+    """Highest C that should fit, from the steps so far (rows are sorted by c and all fit)."""
+    slope = vram_slope(rows)
+    if slope <= 0:
+        return cmax
+    last = rows[-1]
+    return max(last["c"], min(cmax, last["c"] + math.floor((limit_gb - last["vram"]) / slope)))
+
+
+def choose_max(measure, cmax: int, limit_gb: float, drop: float = BANDWIDTH_DROP, say=print) -> tuple[int, list[dict]]:
+    """Returns (best C, every step measured). `measure(c, floor)` runs one step; floor is the live bandwidth limit."""
+    seen: dict[int, dict] = {}
+
+    def floor():
+        clean = [r["bandwidth"] for r in seen.values() if r["bandwidth"] is not None and not tripped(r, limit_gb)]
+        return max(clean) - drop if clean else None
+
+    def step(c):
+        seen[c] = row = measure(c, floor())
+        say(f"  C={c:<3} {row['tput']:6.2f} req/s  p95 {row['p95'] if row['p95'] is None else round(row['p95'], 2)} s  "
+            f"vram {row['vram']:5.2f}/{limit_gb:.2f} GB  bandwidth {row['bandwidth'] or 0:3.0f} %  batch {row['k']}"
+            + (f"  errors {sorted(set(map(str, row['errors'])))}" if row["errors"] else "")
+            + ("  spilled" if row["spilled"] else "") + (f"  cancelled: {row['abort']}" if row.get("abort") else ""))
+        return row
+
+    def good():
+        f = floor()
+        return sorted((r for r in seen.values() if not tripped(r, limit_gb, f)), key=lambda r: r["c"])
+
+    if tripped(step(1), limit_gb):
+        say("stop: one request already exceeds the available VRAM")
+        return 0, list(seen.values())
+    if cmax == 1:
+        return 1, list(seen.values())
+    # C=1 is the baseline; mid-range gives a good VRAM slope. Then compare downward before going higher: high steps
+    # are the slow ones, so they only run once a lower step has shown that more requests still help.
+    second = max(2, cmax // 2)
+    lo, hi = 1, second                   # hi: lowest C known to be no better, or one past the highest C worth trying
+    probe = None
+    if not tripped(step(second), limit_gb, floor()):
+        lo, hi = second, min(cmax, predicted_top(good(), limit_gb, cmax)) + 1
+        if hi - 1 < cmax:
+            say(f"VRAM predicts a limit at C={hi - 1}: nothing above it will run")
+        if second >= 4:
+            lo, probe = 1, second // 2
+    else:
+        say(f"  C={second} tripped a flag: searching below it")
+
+    while probe or hi - lo > max(1, hi // 8):     # within one eighth is close enough
+        c, probe = probe or (lo + hi) // 2, None  # halve the range: the limit is found in a few steps
+        row = seen.get(c) or step(c)
+        why = tripped(row, limit_gb, floor())
+        above = [r for r in good() if r["c"] > c]
+        below = [r for r in good() if r["c"] < c]
+        if why:
+            hi = c
+            say(f"  C={c} tripped {why}: searching below it")
+        elif above and row["tput"] >= PLATEAU * max(r["tput"] for r in above):
+            hi = c
+            say(f"  C={c} matches the higher steps: searching below it")
+        elif above:                              # the higher step is really better
+            lo = c if hi in seen else max(r["c"] for r in above)   # bounded: halve between; open: move past it
+            say(f"  C={c} is below the plateau: searching above C={lo}")
+        elif below and below[-1]["tput"] >= PLATEAU * row["tput"]:
+            hi = below[-1]["c"]                  # the top added nothing: the plateau starts lower
+            lo = below[-2]["c"] if len(below) > 1 else 1
+            say(f"  C={c} adds nothing over C={hi}: searching below it")
+        else:
+            lo = c
+            hi = min(hi, predicted_top(good(), limit_gb, cmax) + 1)   # new evidence can lower the ceiling
+            say(f"  C={c} still gains: searching above it")
+
+    usable = good()
+    best = max(r["tput"] for r in usable)
+    # smallest C that reaches the plateau: more only adds latency and VRAM
+    return min(r["c"] for r in usable if r["tput"] >= PLATEAU * best), list(seen.values())
 
 
 def cat_device(raw: dict, variant: str | None) -> str:
@@ -134,9 +300,9 @@ def cat_device(raw: dict, variant: str | None) -> str:
 def main():
     ap = argparse.ArgumentParser(prog="harness-bench")
     ap.add_argument("model")
-    ap.add_argument("--max", type=int, default=16)
-    ap.add_argument("--burst", type=int, default=20)
-    ap.add_argument("--seconds", type=float, default=30)
+    ap.add_argument("--max", type=int, default=16, help="highest batch to consider")
+    ap.add_argument("--rounds", type=int, default=3, help="batches per step")
+    ap.add_argument("--seconds", type=float, default=30, help="stop adding rounds to a step after this long")
     ap.add_argument("--port", type=int, default=None)
     ap.add_argument("--yes", action="store_true", help="save the recommendation without asking")
     ap.add_argument("--inputs", type=Path, help="bench.json to use instead of the plugin's tests/bench/bench.json")
@@ -153,78 +319,67 @@ def main():
     model_dir = cfg.registry.parent / entry["folder"]
     manifest_path = cfg.registry.parent / entry["manifest"]
     items = load_inputs(model_dir, a.inputs)
-    cat = core.call("GET", "/catalog")["models"].get(a.model)
-    if cat is None:
+    if core.call("GET", "/catalog")["models"].get(a.model) is None:
         sys.exit(f"{a.model} is not in the core catalog")
     raw = yaml.safe_load(manifest_path.read_text(encoding="utf-8-sig"))
+    variant = entry.get("variant", entry["name"]) if raw.get("variants") else None
     conc = raw.get("concurrency") or {}
-    can_parallel = conc.get("batching") or conc.get("thread_safe")
-    cmax = a.max if can_parallel else 1
-    gpu_total = next(iter(core.call("GET", "/status")["gpu"].values()), {}).get("total_gb")
+    cmax = a.max if conc.get("batching") or conc.get("thread_safe") else 1
+    device = cat_device(raw, variant)
+    index = nvml.device_index(device)
 
     lock = core.call("POST", "/bench/lock", {"holder": f"bench:{a.model}"})
     if "error" in lock:
         sys.exit(lock["error"]["message"])
-    rows = []
     try:
-        cs = [1]
-        while cs[-1] * 2 <= cmax:
-            cs.append(cs[-1] * 2)
-        print(f"bench {a.model}: C in {cs}, {a.burst} requests or {a.seconds:.0f} s per step, "
-              f"{len(items)} distinct inputs, GPU {gpu_total} GB")
-        for c in cs:
+        core.call("POST", f"/unload/{a.model}")
+        time.sleep(1)
+        mem = nvml.memory(index)
+        limit_gb = mem[1] * VRAM_MARGIN if mem else float("inf")
+        base_used_gb = mem[2] if mem else 0.0
+        print(f"bench {a.model}: up to C={cmax}, {len(items)} distinct inputs, "
+              f"{mem[1]:.2f} GB free of {mem[0]:.2f} GB, limit {limit_gb:.2f} GB")
+        core.call("POST", "/bench/lock", {"holder": f"bench:{a.model}", "model": a.model, "max": 1})
+
+        def warm(tag):  # load outside the measurement: a reload is not a slow step
+            core.run(a.model, items[0]["function"], items[0]["inputs"], f"bench-warm-{tag}-{os.getpid()}")
+
+        warm(0)
+        cancelled = 0
+
+        def measure(c, floor):
+            nonlocal cancelled
             while others_active(core, a.model):
                 print("  real requests in flight: bench paused …")
                 time.sleep(5)
             core.call("POST", "/bench/lock", {"holder": f"bench:{a.model}", "model": a.model, "max": c})
-            core.call("POST", f"/unload/{a.model}")
-            burst(core, a.model, items, 1, 1, a.seconds, f"warm{c}")  # load + warm-up outside the measurement
-            tput, p50, p95, peak, errs = burst(core, a.model, items, c, a.burst, a.seconds, "m")
-            if p50 is None:
-                print(f"  C={c}: all requests failed {errs}")
-                break
-            rows.append({"c": c, "tput": tput, "p50": p50, "p95": p95, "vram": peak, "errors": len(errs)})
-            print(f"  C={c:<3} {tput:7.2f} req/s  p50 {p50:6.2f}s  p95 {p95:6.2f}s  vram {peak:6.2f} GB"
-                  + (f"  errors {len(errs)} {sorted(set(errs))}" if errs else ""))
-            if errs and any(e == "oom" for e in errs):
-                break
-            if gpu_total and peak > gpu_total * 0.95:
-                # Windows sysmem fallback: no OOM, VRAM spills to RAM over PCIe and everything crawls
-                rows[-1]["spilled"] = True
-                print(f"  stop: VRAM peak {peak:.2f} GB exceeds the card ({gpu_total} GB) -> spilled; C={c} invalid")
-                break
-            # every C runs; the choice is made afterwards from all rows. Only safety stops here.
-            if len(rows) > 1 and c * 2 <= cmax:
-                slope = linear_slope([r["c"] for r in rows], [r["vram"] for r in rows])
-                if gpu_total and peak + slope * c > gpu_total * 0.95:
-                    print("  stop: next step would exceed the GPU")
-                    break
+            row = measure_step(core, a.model, items, c, a.rounds, a.seconds, index, limit_gb, base_used_gb, floor, "m")
+            if row["abort"] or row["errors"]:   # cancelling killed the worker
+                cancelled += 1
+                core.call("POST", "/bench/lock", {"holder": f"bench:{a.model}", "model": a.model, "max": 1})
+                warm(cancelled)
+            return row
+
+        best, rows = choose_max(measure, cmax, limit_gb)
     finally:
         core.call("POST", "/bench/unlock")
         core.call("POST", f"/unload/{a.model}")
 
-    per_extra = round(linear_slope([r["c"] for r in rows], [r["vram"] for r in rows]), 3)
-    rows = [r for r in rows if not r.get("spilled") and not r["errors"]]
-    if not rows:
+    print(f"{len(rows)} steps measured")
+    if best < 1:
         return 1
-    rec = recommend(rows)
-    if rec["c"] > 1 and per_extra <= 0:
+    fit = sorted((r for r in rows if not tripped(r, limit_gb)), key=lambda r: r["c"])
+    per_extra = round(vram_slope(fit), 3)
+    if best > 1 and per_extra <= 0:
         per_extra = 0.05  # max > 1 requires vram_per_extra_gb > 0 (spec 4.2); measured growth was ~0
-    print(f"\nrecommendation: concurrency.max = {rec['c']}  (vram_per_extra_gb = {per_extra})")
-    variant = entry.get("variant", entry["name"]) if raw.get("variants") else None
-    eff = {**conc, **(((raw.get("variants") or {}).get(variant) or {}).get("concurrency") or {})} if variant else conc
-    eff = {**eff, **(tuning.for_model(cfg, tuning.load(cfg), a.model, cat_device(raw, variant)) or {})}
-    if rec["c"] == eff.get("max", 1) and per_extra == eff.get("vram_per_extra_gb", 0.0):
-        print("already tuned to this; nothing to save")
-        return 0
+    print(f"\nrecommendation: concurrency.max = {best}  (vram_per_extra_gb = {per_extra})")
     where = tuning.path(cfg)
     if not a.yes:
         if input(f"save to {where} (this machine only)? [y/N] ").strip().lower() not in ("y", "yes"):
             print("not saved")
             return 0
-    device = cat_device(raw, variant)
-    gpu = nvml.device_name(nvml.device_index(device)) if device.startswith("cuda") else None
-    tuning.save(cfg, a.model, rec["c"], per_extra, gpu)
+    gpu = nvml.device_name(index) if device.startswith("cuda") else None
+    tuning.save(cfg, a.model, best, per_extra, gpu)
     r = core.call("POST", "/reload")
     print(f"saved to {where}; " + ("core reloaded" if "error" not in r else
                                    f"takes effect at next /reload ({r['error']['message']})"))

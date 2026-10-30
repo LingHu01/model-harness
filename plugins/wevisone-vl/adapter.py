@@ -47,28 +47,44 @@ def _r(xs):
 class Adapter(sdk.BaseAdapter):
     def load(self, ctx: sdk.Context) -> None:
         from wevisone_vl import WeVisOneVL  # Tencent package (installed into this plugin's venv)
-        self.engine = WeVisOneVL(ctx.weights_path, device=ctx.device, dtype="bfloat16")
+        # decoder_batch_size 1: the default of 16 decodes every object in an image together at full resolution.
+        # 9 objects peaked at 24 GB and spilled past the card; one at a time took 7.7 GB and was 5x faster.
+        self.engine = WeVisOneVL(ctx.weights_path, device=ctx.device, dtype="bfloat16", decoder_batch_size=1)
+        self._stage_ctx = None
+        model = self.engine.model
+        (getattr(model, "visual", None) or model.model.visual).register_forward_hook(self._vision_done)
+
+    def _vision_done(self, *_):
+        """The image is encoded: preprocessing is over and token generation starts."""
+        ctx, self._stage_ctx = self._stage_ctx, None
+        if ctx:
+            ctx.report_stage("generating")
 
     def run(self, function: str, inputs: dict, ctx: sdk.Context) -> dict:
         return self._one(function, inputs, ctx, idx=0)
 
     def run_batch(self, function: str, inputs_list: list[dict], ctx: sdk.Context) -> list[dict]:
-        """Batched generation (one padded generate call); masks are decoded per image afterwards."""
+        return self.run_mixed([function] * len(inputs_list), inputs_list, ctx)
+
+    def run_mixed(self, functions: list[str], inputs_list: list[dict], ctx: sdk.Context) -> list[dict]:
+        """Batched generation (one padded generate call) with a prompt per request, so tasks can mix;
+        masks are decoded per image afterwards, only for the responses that carry them."""
         from wevisone_vl import build_prompt
-        task = TASKS.get(function)
-        if task is None:
-            raise sdk.PluginError("unknown_function", function)
+        self._stage_ctx = ctx
+        missing = [f for f in functions if f not in TASKS]
+        if missing:
+            raise sdk.PluginError("unknown_function", missing[0])
         images = []
         for inp in inputs_list:
             with Image.open(inp["image"]) as im:
                 images.append(im.convert("RGB"))
-        prompts = [build_prompt(task, inp.get("query", ""), image_size=img.size)
-                   for inp, img in zip(inputs_list, images)]
+        prompts = [build_prompt(TASKS[fn], inp.get("query", ""), image_size=img.size)
+                   for fn, inp, img in zip(functions, inputs_list, images)]
         results = self.engine.predict_batch(
-            images, task=task, prompt=prompts, decode_matting=function in ("segment", "matting"),
+            images, prompt=prompts, decode_matting=any(f in ("segment", "matting") for f in functions),
             max_new_tokens=max(int(i.get("max_new_tokens", 2048)) for i in inputs_list), temperature=0.0)
-        return [self._format(function, res, img, inp, ctx, idx)
-                for idx, (res, img, inp) in enumerate(zip(results, images, inputs_list))]
+        return [self._format(fn, res, img, inp, ctx, idx)
+                for idx, (fn, res, img, inp) in enumerate(zip(functions, results, images, inputs_list))]
 
     def _one(self, function, inputs, ctx, idx):
         task = TASKS.get(function)
@@ -76,6 +92,7 @@ class Adapter(sdk.BaseAdapter):
             raise sdk.PluginError("unknown_function", function)
         with Image.open(inputs["image"]) as im:
             image = im.convert("RGB")
+        self._stage_ctx = ctx
         res = self.engine.predict(image, task=task, query=inputs.get("query", ""),
                                   decode_matting=function in ("segment", "matting"),
                                   max_new_tokens=int(inputs.get("max_new_tokens", 2048)), temperature=0.0)

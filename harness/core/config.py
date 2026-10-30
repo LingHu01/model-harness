@@ -43,6 +43,7 @@ class Config:
     runaway: float
     retention: float
     shutdown_grace: float
+    batch_window: float
     need_margin: float
     need_window: int
     bootstrap_factor: float
@@ -86,6 +87,7 @@ def load(path: Path | None = None) -> Config:
         runaway=duration(t.get("runaway"), 300),
         retention=duration(t.get("retention"), 86400),
         shutdown_grace=duration(t.get("shutdown_grace"), 30),
+        batch_window=duration(t.get("batch_window"), 0.05),
         need_margin=float(mem.get("need_margin", 0.10)),
         need_window=int(mem.get("need_window", 20)),
         bootstrap_factor=float(mem.get("bootstrap_factor", 1.2)),

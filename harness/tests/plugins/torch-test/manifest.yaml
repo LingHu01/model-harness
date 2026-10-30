@@ -7,6 +7,7 @@ description: Harness self-test; holds a requested amount of VRAM for a while.
 functions:
   - name: alloc
     capability: test.alloc
+    extras: [keep]
     summary: Allocate gb of VRAM, hold it for seconds, free it.
     schema: schemas/alloc.json
 runtime:

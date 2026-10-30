@@ -1,3 +1,3 @@
-{ "function": "alloc", "base": "test.alloc", "base_version": 1, "extras": {},
+{ "function": "alloc", "base": "test.alloc", "base_version": 1, "extras": { "keep": {"type": "boolean", "default": false, "description": "Stay allocated after the request."} },
   "output_notes": "allocated_gb actually reserved by PyTorch.",
   "examples": [ { "input": {"gb": 2, "seconds": 1}, "output": {"allocated_gb": 2.0} } ] }

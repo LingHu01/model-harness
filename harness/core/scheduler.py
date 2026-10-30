@@ -56,6 +56,7 @@ class ModelState:
     blocked_by: dict | None = None
     loading: bool = False
     last_error: str | None = None
+    gathered: bool = False       # this dispatch already waited its batch window
 
 
 class Scheduler:
@@ -188,6 +189,12 @@ class Scheduler:
             if w.state not in (W.HOT, W.BUSY):
                 await self.wait_change()
                 continue
+            if (w.model.batching and not w.running and not st.gathered and self.cfg.batch_window > 0
+                    and len(st.queue) < w.model.max_concurrency):
+                st.gathered = True     # requests arriving together leave together
+                await asyncio.sleep(self.cfg.batch_window)
+                continue
+            st.gathered = False
             dispatched = self._dispatch_ready(w.model, w)
             if not dispatched:
                 st.blocked_by = {"kind": "model", "detail": f"{model} busy"} if w.running else st.blocked_by
@@ -226,11 +233,11 @@ class Scheduler:
                     if gpu is not None and gpu[1] < m.vram_per_extra_gb:
                         break
                 k = 1
-            # a batch is one run_batch call: only consecutive requests for the same function
+            # a batch is one adapter call: consecutive requests for the same function, unless the plugin mixes them
             # and only requests validated against the version this worker runs
             fn = st.queue[0].function
             batch = []
-            while (st.queue and len(batch) < k and st.queue[0].function == fn
+            while (st.queue and len(batch) < k and (m.mixed_functions or st.queue[0].function == fn)
                    and st.queue[0].fingerprint == m.fingerprint):
                 batch.append(st.queue.popleft())
             if not batch:
@@ -252,7 +259,7 @@ class Scheduler:
             w.idle_handle = None
         out_dirs = [self.io.out_dir(r.id) for r in batch]
         busy_others = self._busy_on_device(m.device, exclude=m.name)
-        futs = w.run([r.id for r in batch], batch[0].function, [r.inputs for r in batch], out_dirs)
+        futs = w.run([r.id for r in batch], [r.function for r in batch], [r.inputs for r in batch], out_dirs)
         runaway = asyncio.get_running_loop().call_later(m.runaway, self._on_runaway, w, batch)
         self._spawn_bg(self._await_batch(m, w, batch, futs, runaway, busy_others))
         # others waiting on this queue position moved
@@ -488,6 +495,7 @@ class Scheduler:
             await w.spawn()
         w.on_exit = self._on_worker_exit
         w.on_oom_recovered = lambda wk, msg: log.warning("%s: OOM recovered (%s)", wk.name, msg.get("step"))
+        w.on_stage = self._on_stage
         self.workers[m.name] = w
         msg = {"weights_path": m.weights_path, "device": m.device,
                "vram_budget_gb": round(plan["vram_budget_gb"], 3), "ram_budget_gb": round(plan["ram_budget_gb"], 3),
@@ -567,6 +575,11 @@ class Scheduler:
                 self._fail(self.requests[rid], err)
         await self._kill_worker(w, "unloaded")
         return {"unloaded": model, "was": "loaded"}
+
+    def _on_stage(self, w: W.Worker, msg: dict):
+        for rid in msg.get("ids", []):
+            if rid in self.requests:
+                self.requests[rid].emit("stage", name=msg.get("name"))
 
     # ---- catalog reload ---------------------------------------------------------------------------
     def _rebase_queue(self, model: str):

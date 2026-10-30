@@ -60,6 +60,7 @@ class Worker:
         self._logf = None
         self.on_exit = None       # callback(worker)
         self.on_oom_recovered = None
+        self.on_stage = None
 
     # ---- spawn ----------------------------------------------------------------
     async def spawn(self) -> None:
@@ -147,7 +148,7 @@ class Worker:
         self.state = HOT
         return res
 
-    def run(self, ids: list[str], function: str, inputs: list[dict], out_dirs: list[str]) -> list[asyncio.Future]:
+    def run(self, ids: list[str], functions: list[str], inputs: list[dict], out_dirs: list[str]) -> list[asyncio.Future]:
         """One run message (k ids). Each request writes into its own out_dir (single-id) or a batch dir."""
         loop = asyncio.get_running_loop()
         futs = []
@@ -157,7 +158,7 @@ class Worker:
             futs.append(f)
         self.state = BUSY
         self.last_used = time.monotonic()
-        self.send({"type": "run", "ids": ids, "function": function, "inputs": inputs, "out_dir": out_dirs[0],
+        self.send({"type": "run", "ids": ids, "functions": functions, "inputs": inputs, "out_dir": out_dirs[0],
                    "out_dirs": out_dirs})
         return futs
 
@@ -211,6 +212,9 @@ class Worker:
             if not self.running and self.state == BUSY:
                 self.state = HOT
                 self.last_used = time.monotonic()
+        elif t == "stage":
+            if self.on_stage:
+                self.on_stage(self, m)
         elif t == "oom_recovered":
             if self.on_oom_recovered:
                 self.on_oom_recovered(self, m)

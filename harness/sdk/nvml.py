@@ -79,6 +79,19 @@ def memory(index: int = 0):
     return m.total / g, m.free / g, m.used / g
 
 
+def utilization(index: int = 0):
+    """(gpu %, memory bandwidth %) over the driver's last sample period, or None."""
+    if not _load():
+        return None
+    h = _handle(index)
+    if h is None:
+        return None
+    u = (ctypes.c_uint * 2)()  # nvmlUtilization_t
+    if _lib.nvmlDeviceGetUtilizationRates(h, ctypes.byref(u)) != 0:
+        return None
+    return u[0], u[1]
+
+
 def device_name(index: int = 0):
     if not _load():
         return None

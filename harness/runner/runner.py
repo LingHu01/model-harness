@@ -195,16 +195,21 @@ class Runner:
                 send({"type": "error", "id": rid, "code": getattr(e, "code", "worker_error"), "message": str(e)})
 
     def _run(self, m: dict):
-        ids, inputs, fn = m["ids"], m["inputs"], m["function"]
-        ctx = sdk.Context(**{**self.ctx.__dict__, "out_dir": m["out_dir"]})
+        ids, inputs, fns = m["ids"], m["inputs"], m["functions"]
+        ctx = sdk.Context(**{**self.ctx.__dict__, "out_dir": m["out_dir"],
+                             "stage": lambda name: send({"type": "stage", "ids": ids, "name": name})})
         torch = _torch()
         cuda = _cuda_ok(ctx.device)
+        others_gb = 0.0
         if cuda:
             torch.cuda.reset_peak_memory_stats()
+            dev = nvml.memory(nvml.device_index(ctx.device))
+            if dev:  # VRAM other programs hold: a spill starts at total minus this, not at the card's total
+                others_gb = max(0.0, dev[2] - torch.cuda.memory_reserved() / 1024 ** 3 - self.ctx_overhead_gb)
         recoveries: list[str] = []
         t = time.perf_counter()
         with ExtSampler(nvml.device_index(ctx.device), self.sampler_s) as samp:
-            results = self._call_with_recovery(fn, ids, inputs, ctx, recoveries)
+            results = self._call_with_recovery(fns, ids, inputs, ctx, recoveries)
         duration = time.perf_counter() - t
         metrics = {
             "vram_peak_gb": self._torch_peak(),
@@ -217,8 +222,10 @@ class Runner:
             "oom_recoveries": recoveries,
         }
         dev = nvml.memory(nvml.device_index(ctx.device)) if cuda else None
-        if dev and metrics["vram_peak_gb"] and metrics["vram_peak_gb"] > dev[0]:
+        if dev and metrics["vram_peak_gb"] and metrics["vram_peak_gb"] + others_gb > dev[0]:
             metrics["vram_spill"] = True  # Windows sysmem fallback: ran past the card's VRAM, very slow
+        if cuda:  # an idle model holds its weights, not the allocator's cache of its last request
+            torch.cuda.empty_cache()
         if self.first_request:
             metrics["cold_start"] = self.cold_start
             self.first_request = False
@@ -229,19 +236,22 @@ class Runner:
             else:
                 send({"type": "result", "id": rid, "result": res, "metrics": metrics})
 
-    def _call(self, fn, inputs, ctx):
+    def _call(self, fns, inputs, ctx):
         if len(inputs) == 1:
-            return [self.adapter.run(fn, inputs[0], ctx)]
-        out = self.adapter.run_batch(fn, inputs, ctx)
+            return [self.adapter.run(fns[0], inputs[0], ctx)]
+        if len(set(fns)) == 1:
+            out = self.adapter.run_batch(fns[0], inputs, ctx)
+        else:
+            out = self.adapter.run_mixed(fns, inputs, ctx)
         if len(out) != len(inputs):
             raise RuntimeError("run_batch returned wrong number of results")
         return out
 
-    def _call_with_recovery(self, fn, ids, inputs, ctx, recoveries, depth=0):
+    def _call_with_recovery(self, fns, ids, inputs, ctx, recoveries, depth=0):
         """OOM ladder (spec 9.4): empty cache -> split batch -> offload more -> fail."""
         torch = _torch()
         try:
-            return self._call(fn, inputs, ctx)
+            return self._call(fns, inputs, ctx)
         except Exception as e:
             if not sdk.is_cuda_oom(e):
                 if len(inputs) == 1:
@@ -252,7 +262,7 @@ class Runner:
         recoveries.append("empty_cache")
         send({"type": "oom_recovered", "id": ids[0], "step": "empty_cache"})
         try:
-            return self._call(fn, inputs, ctx)
+            return self._call(fns, inputs, ctx)
         except Exception as e:
             if not sdk.is_cuda_oom(e):
                 return [e] * len(inputs)
@@ -261,8 +271,8 @@ class Runner:
             recoveries.append(f"split:{len(inputs)}")
             send({"type": "oom_recovered", "id": ids[0], "step": f"split:{len(inputs)}"})
             h = len(inputs) // 2
-            return (self._call_with_recovery(fn, ids[:h], inputs[:h], ctx, recoveries, depth + 1)
-                    + self._call_with_recovery(fn, ids[h:], inputs[h:], ctx, recoveries, depth + 1))
+            return (self._call_with_recovery(fns[:h], ids[:h], inputs[:h], ctx, recoveries, depth + 1)
+                    + self._call_with_recovery(fns[h:], ids[h:], inputs[h:], ctx, recoveries, depth + 1))
         # 3. offload more layers (adapter opt-in)
         more = getattr(self.adapter, "offload_more", None)
         if callable(more) and ctx.offload != "none":
@@ -271,7 +281,7 @@ class Runner:
                 torch.cuda.empty_cache()
                 recoveries.append("offload_more")
                 send({"type": "oom_recovered", "id": ids[0], "step": "offload_more"})
-                return self._call(fn, inputs, ctx)
+                return self._call(fns, inputs, ctx)
             except Exception as e:
                 return [e]
         # 4. fail

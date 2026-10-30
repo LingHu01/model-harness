@@ -39,6 +39,7 @@ class ModelDef:
     max_concurrency: int = 1
     batching: bool = False
     thread_safe: bool = False
+    mixed_functions: bool = False  # one batch may hold different functions
     vram_per_extra_gb: float = 0.0
     offload: str = "partial"
     compile_eligible: bool = True
@@ -219,6 +220,7 @@ class Catalog:
             name=entry["name"], tags=tags, folder=folder, description=man.get("description", ""),
             functions=functions, entry=entry_file, device=rt.get("device", "cuda:0"),
             max_concurrency=cmax, batching=batching, thread_safe=thread_safe, vram_per_extra_gb=per_extra,
+            mixed_functions=bool(conc.get("mixed_functions", False)),
             offload=man.get("offload", "partial"),
             compile_eligible=(man.get("compile") or {}).get("eligible", True) is not False,
             runaway=duration((man.get("limits") or {}).get("runaway"), self.cfg.runaway),

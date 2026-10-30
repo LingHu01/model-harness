@@ -155,9 +155,9 @@ def gpu_tests():
     need_b = http("GET", "/status")["models"]["torch-b"]["need"]
     check("need measured", need_b["measured"] and need_b["vram_gb"] >= big, json.dumps(need_b))
     http("POST", "/unload/torch-b")
-    r = run("torch-a", "alloc", {"gb": big})
+    r = run("torch-a", "alloc", {"gb": big, "keep": True})
     check("torch-a alloc", r.get("event") == "result", str(r)[:200])
-    # torch-a is idle but holds `big` GB in PyTorch's cache: torch-b must evict it (R3)
+    # torch-a is idle but keeps `big` GB allocated: torch-b must evict it (R3)
     r = run("torch-b", "alloc", {"gb": big})
     st = http("GET", "/status")["models"]
     check("pressure eviction (R3)", r.get("event") == "result" and st["torch-a"]["state"] in ("PAGED", "SHELL", "SPAWNING", "GONE"),

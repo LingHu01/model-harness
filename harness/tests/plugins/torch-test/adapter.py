@@ -17,5 +17,7 @@ class Adapter(sdk.BaseAdapter):
         torch.cuda.synchronize()
         time.sleep(float(inputs.get("seconds", 0)))
         got = buf.numel() / 1024 ** 3
+        if inputs.get("keep"):  # stays allocated while idle, like model weights
+            self.kept = buf
         del buf
         return {"allocated_gb": round(got, 3)}
