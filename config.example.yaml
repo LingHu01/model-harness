@@ -7,6 +7,7 @@ registry: registry.yaml              # installed plugins; folder/manifest paths 
 default_python: "3.12"              # plugin venv python when the plugin has no .python-version
 
 port: 8765                          # core HTTP, bound to 127.0.0.1 only
+mcp_port: 8766                      # shared MCP server (shim --http), for several agents
 
 timers:
   idle_timeout: 30m                 # R1

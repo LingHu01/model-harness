@@ -36,6 +36,7 @@ class Config:
     registry: Path               # local list of installed plugins (untracked)
     default_python: str
     port: int
+    mcp_port: int
     idle_timeout: float
     shell_expiry: float
     queue_report: float
@@ -80,6 +81,7 @@ def load(path: Path | None = None) -> Config:
         registry=_resolve(raw.get("registry", "registry.yaml"), base),
         default_python=str(raw.get("default_python", "3.12")),
         port=int(raw.get("port", 8765)),
+        mcp_port=int(raw.get("mcp_port", 8766)),
         idle_timeout=duration(t.get("idle_timeout"), 1800),
         shell_expiry=duration(t.get("shell_expiry"), 3 * 86400),
         queue_report=duration(t.get("queue_report"), 30),

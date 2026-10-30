@@ -252,7 +252,8 @@ class Catalog:
 
     def structured(self) -> dict:
         return {
-            "contracts": {c: {"version": v.get("version"), "catalog_line": v.get("catalog_line")}
+            "contracts": {c: {"version": v.get("version"), "catalog_line": v.get("catalog_line"), "tool": v.get("tool"),
+                              "inputs": list(v["input"].get("properties", {}))}
                           for c, v in self.contracts.items()},
             "models": {m.name: {"tags": m.tags, "description": m.description,
                                 "functions": {f.name: {"capability": f.capability, "summary": f.summary,

@@ -1,5 +1,39 @@
-{ "capability": "vision.detect", "version": 1,
-  "catalog_line": "image, query → instances[] {box, label}",
-  "input":  { "type": "object", "required": ["image", "query"], "properties": { "image": {"type": "string", "description": "file path"}, "query": {"type": "string", "description": "what to look for, in plain words (several labels: one per line)"} } },
-  "output": { "type": "object", "required": ["instances"],
-              "properties": { "instances": { "type": "array", "description": "box = [x0,y0,x1,y1] pixels" } } } }
+{
+ "capability": "vision.detect",
+ "version": 1,
+ "catalog_line": "image, query → instances[] {box, label}",
+ "input": {
+  "type": "object",
+  "required": [
+   "image",
+   "query"
+  ],
+  "properties": {
+   "image": {
+    "type": "string",
+    "description": "file path"
+   },
+   "query": {
+    "type": "string",
+    "description": "what to look for, in plain words (several labels: one per line)"
+   }
+  }
+ },
+ "output": {
+  "type": "object",
+  "required": [
+   "instances"
+  ],
+  "properties": {
+   "instances": {
+    "type": "array",
+    "description": "{box, label}. box = [x0,y0,x1,y1] in pixels"
+   }
+  }
+ },
+ "tool": {
+  "name": "detect_objects",
+  "description": "Find objects in an image and get a box for each one.",
+  "returns": "Returns instances: a list of {box, label}, empty if nothing was found. box = [x0,y0,x1,y1] in pixels. Also model and seconds."
+ }
+}

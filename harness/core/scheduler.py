@@ -8,6 +8,7 @@ import asyncio
 import collections
 import logging
 import time
+from pathlib import Path
 import uuid
 from dataclasses import dataclass, field
 
@@ -465,13 +466,18 @@ class Scheduler:
                 if pid in ours:
                     continue
                 try:
-                    name = psutil.Process(pid).name()
-                except psutil.Error:
-                    name = "?"
-                holders.append(f"{name} (pid {pid}{f', {used:.1f} GB' if used else ''})")
-            detail = ", ".join(holders) or "held outside the harness"
+                    proc = psutil.Process(pid)
+                    name, ram = proc.name(), proc.memory_info().rss
+                    if "python" in name.lower():  # the folder says which app this python is
+                        name = f"{name} in {Path(proc.cwd()).name}"
+                except (psutil.Error, OSError):
+                    name, ram = "?", 0
+                holders.append((used or 0, ram, f"{name} (pid {pid}{f', {used:.1f} GB' if used else ''})"))
+            # Windows rarely gives VRAM per process and lists every desktop app, so the biggest come first
+            detail = ", ".join(h[2] for h in sorted(holders, reverse=True)[:3]) or "held outside the harness"
             return HarnessError("external_memory_holder",
-                                f"{m.name} needs {need.vram_gb:.1f} GB VRAM, {gpu[1]:.1f} GB free; {detail}",
+                                f"{m.name} needs {need.vram_gb:.1f} GB VRAM, {gpu[1]:.1f} GB free. Likely holding it: "
+                                f"{detail}. Free that memory, then retry.",
                                 blocked_by={"kind": "external", "detail": detail})
         return HarnessError("external_memory_holder",
                             f"{m.name} needs {need.ram_gb:.1f} GB RAM, {free_ram:.1f} GB available; "

@@ -11,6 +11,7 @@ import json
 import logging
 import logging.handlers
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -18,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 HARNESS_ROOT = Path(__file__).resolve().parent.parent
+SHARED = "--http" in sys.argv     # one server for several agents
 sys.path.insert(0, str(HARNESS_ROOT))
 
 from mcp.server.mcpserver import Context, MCPServer  # noqa: E402
@@ -85,7 +87,7 @@ async def _forward(method, path, body=None, timeout=60):
 
 # ---- tools --------------------------------------------------------------------------------------
 async def start() -> dict:
-    """Start the harness core if it is not running (windowless, single instance). Idempotent."""
+    """Troubleshooting only: the harness starts by itself. Start the core if a request reports it is not running."""
     if await _healthy():
         return {"ok": True, "already_running": True, "pid": _lock_pid()}
     py = osx.venv_python(str(HARNESS_ROOT / ".venv"))  # console launcher + CREATE_NO_WINDOW: see os_win
@@ -108,10 +110,17 @@ async def start() -> dict:
                                                                 f"see {cfg.path('logs', 'core.log')}"}}
 
 
-async def stop() -> dict:
-    """Graceful shutdown: refuse new requests, cancel queued, wait for running, kill all workers, exit."""
+async def stop(force: bool = False) -> dict:
+    """Troubleshooting only: shut the harness down. Every agent shares it, so this is refused while requests are
+    running or queued, unless force=true. To free VRAM use unload."""
     if not await _healthy():
         return {"ok": True, "was_running": False}
+    if SHARED and not force:
+        models = (await _forward("GET", "/status")).get("models", {})
+        busy = {m: s["running"] + s["queued"] for m, s in models.items() if s["running"] or s["queued"]}
+        if busy:
+            return {"error": {"code": "busy", "message": f"requests in progress: {busy}. Other agents share this "
+                                                         "harness; use cancel, or force=true in an emergency"}}
     await _http("POST", "/shutdown")
     deadline = time.monotonic() + cfg.shutdown_grace + 20
     while time.monotonic() < deadline and await _healthy():
@@ -120,12 +129,14 @@ async def stop() -> dict:
 
 
 async def is_running() -> dict:
-    """Whether the harness core is up (lock file + /health)."""
+    """Troubleshooting only, if a request fails: whether the harness core is up. No need to check before a call."""
     return {"running": await _healthy(), "pid": _lock_pid()}
 
 
 async def run(model: str, function: str, inputs: dict[str, Any], ctx: Context) -> dict:
     """(description replaced at start-up with the catalog)"""
+    if SHARED and not await _healthy():
+        await start()
     if not await _healthy():
         return NOT_RUNNING
     body = json.dumps({"model": model, "function": function, "inputs": inputs}).encode()
@@ -169,17 +180,19 @@ async def get_schema(model: str, function: str) -> dict:
 
 
 async def status() -> dict:
-    """Per-model state (GONE/PAGED/HOT/BUSY…), queue, memory need, free VRAM/RAM, flags, invalid models."""
+    """Troubleshooting only, if a request fails: per-model state, queue, memory need, free VRAM/RAM, invalid models.
+    No need to check before a call."""
     return await _forward("GET", "/status")
 
 
 async def unload(model: str, force: bool = False) -> dict:
-    """Kill a model's worker to free its VRAM (keeps a paged warm shell). Busy -> error unless force=true."""
+    """Free a model's VRAM, for example for another program. Models unload by themselves when idle or when another
+    needs room. Busy -> error unless force=true."""
     return await _forward("POST", f"/unload/{model}?force={'true' if force else 'false'}")
 
 
 async def cancel(request_id: str) -> dict:
-    """Cancel a queued or running request (running: its worker is killed)."""
+    """Cancel a stuck queued or running request (running: its worker is killed)."""
     return await _forward("POST", f"/cancel/{request_id}")
 
 
@@ -204,17 +217,67 @@ async def _publish_catalog(res: dict, ctx: Context) -> dict:
 
 
 async def reload(ctx: Context) -> dict:
-    """Re-read the registry, manifests, schemas and tuning without restarting the core. Models that did not
+    """Maintenance: re-read the registry, manifests, schemas and tuning without restarting the core. Models that did not
     change stay loaded; changed or removed ones retire once their running requests finish. Returns
     {added, removed, changed, invalid, catalog}."""
     return await _publish_catalog(await _forward("POST", "/reload"), ctx)
 
 
 async def add_model(folder: str, ctx: Context, tags: list[str] | None = None) -> dict:
-    """Register a plugin folder (manifest.yaml, env.lock, adapter, schemas, tests/smoke.py) and make it available
+    """Maintenance: register a plugin folder (manifest.yaml, env.lock, adapter, schemas, tests/smoke.py), available
     at once, no restart. Each variant becomes a model. cap: tags come from the manifest; pass the others in
     tags (lang:en, speed:fast, quality:high, license:...). An invalid plugin is rejected and not registered."""
     return await _publish_catalog(await _forward("POST", "/add_model", {"folder": folder, "tags": tags}), ctx)
+
+
+def _catalog() -> dict:
+    try:
+        return json.loads(cfg.path("state", "catalog.json").read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _named_tool(capability: str, contract: dict, models: dict):
+    """A tool named for what it does, for one capability. A model picks tools by name: `run` hides all this."""
+    tool = contract["tool"]
+
+    async def call(image: str, ctx: Context, query: str = "", model: str = "") -> dict:
+        name = model or next(iter(models))
+        if name not in models:
+            return {"error": {"code": "unknown_model", "message": f"{name}: choose one of {', '.join(models)}"}}
+        inputs = {"image": image}
+        if "query" in contract["inputs"]:
+            inputs["query"] = query or tool.get("default_query", "")
+        done = await run(name, models[name], inputs, ctx)
+        if "result" not in done:
+            return done
+        out = {k: v for k, v in done["result"].items() if k != "response"}  # raw model text helps nobody
+        if "cutout" in out:
+            out.pop("instances", None)
+        return {**out, "model": name, "seconds": done.get("metrics", {}).get("duration_s")}
+
+    async def save(image: str, ctx: Context, query: str = "", model: str = "", output_path: str = "") -> dict:
+        out = await call(image, ctx, query, model)
+        if output_path and "cutout" in out:
+            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+            out["cutout"] = shutil.copy2(out["cutout"], output_path)
+        return out
+
+    described = ", ".join(f"{m}" for m in models)
+    return (save if tool.get("saves_file") else call, tool["name"],
+            f"{tool['description']} Image: a file path. Models: {described} (default the first). {tool['returns']}")
+
+
+def _named_tools() -> list:
+    cat = _catalog()
+    out = []
+    for capability, contract in (cat.get("contracts") or {}).items():
+        models = {m: next((f for f, d in spec["functions"].items() if d["capability"] == capability), None)
+                  for m, spec in (cat.get("models") or {}).items()}
+        models = {m: f for m, f in models.items() if f}
+        if contract.get("tool") and models:
+            out.append(_named_tool(capability, contract, models))
+    return out
 
 
 _srv: MCPServer | None = None
@@ -223,8 +286,9 @@ _srv: MCPServer | None = None
 def build_server() -> MCPServer:
     global _srv
     srv = MCPServer("model-harness", instructions=(
-        "Local models (vision, audio, OCR…) that are not LLMs. Call start once if is_running is false. "
-        "Use run(model, function, inputs). Models load on demand; the first call of a model is slower."))
+        "Local models that are not LLMs. Call the tool named for the job, such as remove_background. It starts and "
+        "loads what it needs, so no checks are needed first; a model's first call is slower. For anything else use "
+        "run(model, function, inputs)."))
     srv.add_tool(start, description=start.__doc__)
     srv.add_tool(stop, description=stop.__doc__)
     srv.add_tool(is_running, description=is_running.__doc__)
@@ -235,6 +299,8 @@ def build_server() -> MCPServer:
     srv.add_tool(cancel, description=cancel.__doc__)
     srv.add_tool(reload, description=reload.__doc__)
     srv.add_tool(add_model, description=add_model.__doc__)
+    for fn, name, description in _named_tools():
+        srv.add_tool(fn, name=name, description=description)
     _srv = srv
     return srv
 
@@ -242,6 +308,11 @@ def build_server() -> MCPServer:
 def main():
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    if SHARED:
+        log.info("shared MCP server on 127.0.0.1:%s", cfg.mcp_port)
+        log.info("core: %s", asyncio.run(start()))
+        build_server().run("streamable-http", host="127.0.0.1", port=cfg.mcp_port)
+        return
     log.info("shim session start")
     build_server().run("stdio")
 

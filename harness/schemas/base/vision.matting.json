@@ -1,5 +1,45 @@
-{ "capability": "vision.matting", "version": 1,
-  "catalog_line": "image, query → instances[] {box, alpha}",
-  "input":  { "type": "object", "required": ["image", "query"], "properties": { "image": {"type": "string", "description": "file path"}, "query": {"type": "string", "description": "what to look for, in plain words (several labels: one per line)"} } },
-  "output": { "type": "object", "required": ["instances"],
-              "properties": { "instances": { "type": "array", "description": "alpha = path to 8-bit alpha PNG" } } } }
+{
+ "capability": "vision.matting",
+ "version": 1,
+ "catalog_line": "image, query → instances[] {box, alpha}",
+ "input": {
+  "type": "object",
+  "required": [
+   "image",
+   "query"
+  ],
+  "properties": {
+   "image": {
+    "type": "string",
+    "description": "file path"
+   },
+   "query": {
+    "type": "string",
+    "description": "what to look for, in plain words (several labels: one per line)"
+   }
+  }
+ },
+ "output": {
+  "type": "object",
+  "required": [
+   "instances"
+  ],
+  "properties": {
+   "cutout": {
+    "type": "string",
+    "description": "path to an RGBA PNG at the original size, ready to use"
+   },
+   "instances": {
+    "type": "array",
+    "description": "box and alpha per instance; alpha = path to 8-bit alpha PNG"
+   }
+  }
+ },
+ "tool": {
+  "name": "remove_background",
+  "description": "Remove the background from an image and get a transparent PNG cutout. Soft edges: hair, fur, glass. Say what to keep in query, or leave it empty for the main subject. Set output_path to save the cutout there.",
+  "default_query": "the main subject",
+  "saves_file": true,
+  "returns": "Returns cutout: path to an RGBA PNG at the original size, ready to use. The background is transparent, edges and see-through areas keep partial transparency, and solid areas are about 254 of 255, which is normal. Also model and seconds."
+ }
+}

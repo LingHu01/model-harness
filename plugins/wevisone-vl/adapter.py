@@ -106,6 +106,17 @@ class Adapter(sdk.BaseAdapter):
                                   max_new_tokens=int(inputs.get("max_new_tokens", 2048)), temperature=0.0)
         return self._format(function, res, image, inputs, ctx, idx)
 
+    def _cutout(self, image, alphas, ctx, idx) -> str:
+        """Every matted instance on transparency: what "remove the background" asks for."""
+        keep = np.zeros((image.height, image.width), dtype=np.float32)
+        for a in alphas:
+            keep = np.maximum(keep, a)
+        rgba = image.convert("RGBA")
+        rgba.putalpha(Image.fromarray((np.clip(keep, 0, 1) * 255).astype(np.uint8)))
+        path = ctx.out_path(f"cutout_{idx}.png")
+        rgba.save(path)
+        return path
+
     def _format(self, function, res, image, inputs, ctx, idx):
         w, h = image.size
         out: dict = {"response": res.response}
@@ -134,4 +145,6 @@ class Adapter(sdk.BaseAdapter):
                 png.save(path)
                 inst.append({"box": _r([box[0] * w, box[1] * h, box[2] * w, box[3] * h]), key: path})
             out["instances"] = inst
+            if function == "matting" and res.masks:
+                out["cutout"] = self._cutout(image, [np.asarray(m, dtype=np.float32) for m in res.masks], ctx, idx)
         return out
