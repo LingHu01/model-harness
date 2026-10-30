@@ -1,0 +1,3 @@
+{ "function": "alloc", "base": "test.alloc", "base_version": 1, "extras": {},
+  "output_notes": "allocated_gb actually reserved by PyTorch.",
+  "examples": [ { "input": {"gb": 2, "seconds": 1}, "output": {"allocated_gb": 2.0} } ] }

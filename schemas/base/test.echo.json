@@ -1,0 +1,4 @@
+{ "capability": "test.echo", "version": 1,
+  "catalog_line": "text → text (harness self-test)",
+  "input":  { "type": "object", "required": ["text"], "properties": { "text": {"type": "string"} } },
+  "output": { "type": "object", "required": ["text"], "properties": { "text": {"type": "string"} } } }

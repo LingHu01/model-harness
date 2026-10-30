@@ -1,0 +1,5 @@
+{ "capability": "test.alloc", "version": 1,
+  "catalog_line": "gb, seconds → allocated_gb (holds VRAM; harness self-test)",
+  "input":  { "type": "object", "required": ["gb"],
+              "properties": { "gb": {"type": "number", "minimum": 0}, "seconds": {"type": "number", "minimum": 0} } },
+  "output": { "type": "object", "required": ["allocated_gb"], "properties": { "allocated_gb": {"type": "number"} } } }

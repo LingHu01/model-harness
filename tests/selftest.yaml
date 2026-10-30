@@ -1,0 +1,14 @@
+# Short timers for tests/selftest.py (HARNESS_CONFIG points here). Separate data root and port.
+data_root: E:/harness-data-test
+weights_root: E:/harness-weights
+uv_cache_dir: E:/harness-data/uv-cache
+default_python: "3.12"
+port: 8799
+timers:
+  idle_timeout: 8s
+  shell_expiry: 3d
+  queue_report: 2s
+  queue_stall: 7s
+  runaway: 10s
+  retention: 24h
+  shutdown_grace: 10s

@@ -1,0 +1,5 @@
+{ "capability": "vision.point", "version": 1,
+  "catalog_line": "image, query → points[] {point, label}",
+  "input":  { "type": "object", "required": ["image", "query"], "properties": { "image": {"type": "string", "description": "file path"}, "query": {"type": "string", "description": "what to look for, in plain words (several labels: one per line)"} } },
+  "output": { "type": "object", "required": ["points"],
+              "properties": { "points": { "type": "array", "description": "point = [x,y] pixels" } } } }

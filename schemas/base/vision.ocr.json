@@ -1,0 +1,4 @@
+{ "capability": "vision.ocr", "version": 1,
+  "catalog_line": "image → words[] {text, box}",
+  "input":  { "type": "object", "required": ["image"], "properties": { "image": {"type": "string", "description": "file path"} } },
+  "output": { "type": "object", "required": ["words"], "properties": { "words": { "type": "array" } } } }

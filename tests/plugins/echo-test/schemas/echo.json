@@ -1,0 +1,5 @@
+{ "function": "echo", "base": "test.echo", "base_version": 1,
+  "extras": { "sleep_s": {"type": "number", "minimum": 0, "default": 0, "description": "Delay before answering."},
+              "crash":   {"type": "boolean", "default": false, "description": "Kill the runner (crash test)."} },
+  "output_notes": "Same text back.",
+  "examples": [ { "input": {"text": "hi"}, "output": {"text": "hi"} } ] }

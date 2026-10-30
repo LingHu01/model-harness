@@ -1,0 +1,15 @@
+# Self-test fixtures only (selftest.yaml points here). Paths are relative to this file.
+version: 1
+models:
+  - name: echo-test
+    tags: [cap:test.echo]
+    folder: plugins/echo-test
+    manifest: plugins/echo-test/manifest.yaml
+  - name: torch-a
+    tags: [cap:test.alloc]
+    folder: plugins/torch-test
+    manifest: plugins/torch-test/manifest.yaml
+  - name: torch-b
+    tags: [cap:test.alloc]
+    folder: plugins/torch-test
+    manifest: plugins/torch-test/manifest.yaml

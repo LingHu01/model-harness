@@ -1,0 +1,5 @@
+{ "capability": "vision.count", "version": 1,
+  "catalog_line": "image, query → count, instances[] {box}",
+  "input":  { "type": "object", "required": ["image", "query"], "properties": { "image": {"type": "string", "description": "file path"}, "query": {"type": "string", "description": "what to look for, in plain words (several labels: one per line)"} } },
+  "output": { "type": "object", "required": ["count"],
+              "properties": { "count": { "type": "integer" }, "instances": { "type": "array" } } } }

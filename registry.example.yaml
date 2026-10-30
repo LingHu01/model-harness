@@ -1,0 +1,8 @@
+# Copy to registry.yaml (untracked). One entry per installed plugin; paths are relative to this file or absolute.
+version: 1
+models:
+  - name: my-model
+    tags: [cap:vision.detect, lang:en, speed:fast, quality:medium]
+    folder: plugins/my-model
+    manifest: plugins/my-model/manifest.yaml
+    # variant: my-model-large   # when the manifest declares variants

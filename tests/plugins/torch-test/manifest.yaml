@@ -1,0 +1,17 @@
+version: 1
+name: torch-test
+variants:
+  torch-a: {}
+  torch-b: {}
+description: Harness self-test; holds a requested amount of VRAM for a while.
+functions:
+  - name: alloc
+    capability: test.alloc
+    summary: Allocate gb of VRAM, hold it for seconds, free it.
+    schema: schemas/alloc.json
+runtime:
+  entry: adapter.py
+  device: cuda:0
+offload: none
+compile:
+  eligible: false

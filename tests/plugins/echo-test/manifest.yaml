@@ -1,0 +1,12 @@
+version: 1
+name: echo-test
+description: Harness self-test; echoes text back, can sleep or crash on demand.
+functions:
+  - name: echo
+    capability: test.echo
+    summary: Return the input text (optionally after a delay).
+    extras: [sleep_s, crash]
+    schema: schemas/echo.json
+runtime:
+  entry: adapter.py
+  device: cpu
