@@ -34,6 +34,7 @@ class Request:
     function: str
     inputs: dict
     fingerprint: str = ""           # plugin version the inputs were validated against
+    limit_s: float | None = None    # stop generating after this long (tools/bench)
     events: asyncio.Queue = field(default_factory=asyncio.Queue)
     state: str = "queued"           # queued | running | done | failed
     ts_in: float = field(default_factory=time.monotonic)
@@ -90,7 +91,8 @@ class Scheduler:
         return t
 
     # ---- submit -------------------------------------------------------------------------
-    def submit(self, model: str, function: str, inputs: dict, request_id: str | None = None) -> Request:
+    def submit(self, model: str, function: str, inputs: dict, request_id: str | None = None,
+               limit_s: float | None = None) -> Request:
         if self.stopping:
             raise HarnessError("shutting_down", "harness is stopping")
         m = self.catalog.models.get(model)
@@ -105,7 +107,7 @@ class Scheduler:
         if rid in self.requests:
             raise HarnessError("invalid_input", f"duplicate request_id {rid}")
         norm = self.io.normalise(rid, fn, inputs)
-        req = Request(rid, model, function, norm, m.fingerprint)
+        req = Request(rid, model, function, norm, m.fingerprint, limit_s)
         self.requests[rid] = req
         self.store.request_in(rid, model, function)
         st = self.models[model]
@@ -204,9 +206,15 @@ class Scheduler:
     def _slots(self, m: ModelDef) -> int:
         return m.max_concurrency if m.thread_safe and not m.batching else 1
 
+    def _batch_limit(self, m: ModelDef) -> int:
+        """Limits are tuned per function. If functions mix in the queue, the lowest limit applies."""
+        queue = self.models[m.name].queue
+        functions = {r.function for r in queue} if m.mixed_functions else {queue[0].function}
+        return min(m.function_max.get(f, m.max_concurrency) for f in functions)
+
     def _choose_k(self, m: ModelDef, queued: int) -> int:
-        """Largest k <= max such that the extra VRAM for k fits what is free now (spec 11)."""
-        k = min(queued, m.max_concurrency) if m.batching else 1
+        """Largest k <= the batch limit such that the extra VRAM for k fits what is free now (spec 11)."""
+        k = min(queued, self._batch_limit(m)) if m.batching else 1
         if k <= 1 or m.vram_per_extra_gb <= 0:
             return max(1, k)
         gpu = self.memory.gpu(m.device)
@@ -259,7 +267,8 @@ class Scheduler:
             w.idle_handle = None
         out_dirs = [self.io.out_dir(r.id) for r in batch]
         busy_others = self._busy_on_device(m.device, exclude=m.name)
-        futs = w.run([r.id for r in batch], [r.function for r in batch], [r.inputs for r in batch], out_dirs)
+        futs = w.run([r.id for r in batch], [r.function for r in batch], [r.inputs for r in batch], out_dirs,
+                    max((r.limit_s or 0 for r in batch), default=0) or None)
         runaway = asyncio.get_running_loop().call_later(m.runaway, self._on_runaway, w, batch)
         self._spawn_bg(self._await_batch(m, w, batch, futs, runaway, busy_others))
         # others waiting on this queue position moved
@@ -633,14 +642,14 @@ class Scheduler:
         if max_concurrency > 1 and not (m.batching or m.thread_safe):
             raise HarnessError("invalid_input", f"{model} declares neither batching nor thread_safe")
         self._bench_saved = getattr(self, "_bench_saved", {})
-        self._bench_saved.setdefault(model, m.max_concurrency)
-        m.max_concurrency = max(1, int(max_concurrency))
+        self._bench_saved.setdefault(model, (m.max_concurrency, m.function_max))
+        m.max_concurrency, m.function_max = max(1, int(max_concurrency)), {}
         self.wake()
 
     def bench_restore(self):
         for model, cmax in getattr(self, "_bench_saved", {}).items():
             if model in self.catalog.models:
-                self.catalog.models[model].max_concurrency = cmax
+                self.catalog.models[model].max_concurrency, self.catalog.models[model].function_max = cmax
         self._bench_saved = {}
 
     # ---- status ---------------------------------------------------------------------------------

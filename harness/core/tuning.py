@@ -5,7 +5,12 @@ are local measurements. The manifest keeps what the adapter can do (batching, th
 portable default. Tuning is not part of plugin_version: re-tuning keeps measured memory needs.
 
     # DATA_ROOT/state/tuning.yaml
-    wevisone-vl-2b: {max: 8, vram_per_extra_gb: 0.22, gpu: NVIDIA GeForce RTX ..., tuned: '2026-10-30'}
+    wevisone-vl-2b:
+      gpu: NVIDIA GeForce RTX ...
+      tuned: '2026-10-30'
+      max: 8                     # highest of the functions
+      vram_per_extra_gb: 0.22
+      functions: {matting: {max: 4, vram_per_extra_gb: 0.22}, ocr: {max: 8, vram_per_extra_gb: 0.1}}
 """
 from __future__ import annotations
 
@@ -36,10 +41,13 @@ def load(cfg: Config) -> dict:
         return {}
 
 
-def save(cfg: Config, model: str, cmax: int, per_extra: float, gpu: str | None):
+def save(cfg: Config, model: str, functions: dict[str, dict], gpu: str | None):
+    """`functions`: {name: {max, vram_per_extra_gb}}, each tuned on its own."""
     data = load(cfg)
-    data[model] = {"max": int(cmax), "vram_per_extra_gb": float(per_extra), "gpu": gpu,
-                   "tuned": datetime.date.today().isoformat()}
+    functions = {**(data.get(model) or {}).get("functions", {}), **functions}   # other functions keep their tuning
+    data[model] = {"max": max(f["max"] for f in functions.values()),
+                   "vram_per_extra_gb": max(f["vram_per_extra_gb"] for f in functions.values()),
+                   "functions": functions, "gpu": gpu, "tuned": datetime.date.today().isoformat()}
     path(cfg).write_text(HEADER + yaml.safe_dump(data, sort_keys=True, default_flow_style=None), encoding="utf-8")
 
 

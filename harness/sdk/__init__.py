@@ -1,6 +1,8 @@
 """Helpers plugins import. Pure Python; torch is imported lazily and only when a helper needs it."""
 from __future__ import annotations
 
+import time
+
 import os
 import sys
 from dataclasses import dataclass, field
@@ -19,6 +21,10 @@ def setup_offline_env() -> None:
         os.environ.pop(k, None)
 
 
+class Stopped(Exception):
+    """Raised by Context.tick at the request's time limit: a clean early end, not a failure."""
+
+
 @dataclass
 class Context:
     weights_path: str = ""
@@ -33,11 +39,24 @@ class Context:
     out_dir: str = ""                    # set per request
     extra: dict[str, Any] = field(default_factory=dict)
     stage: Any = None                    # set per request by the runner
+    limit_s: float | None = None         # stop after this long generating (tools/bench); None: run to the end
+    tokens: int = 0
+    generating_since: float | None = None
 
     def report_stage(self, name: str) -> None:
-        """Tell the client what the request is doing, e.g. "generating" once loading and preprocessing are over."""
+        """Tell the client what the request is doing. "generating" means loading and preprocessing are over."""
+        if name == "generating" and self.generating_since is None:
+            self.generating_since = time.perf_counter()
         if self.stage:
             self.stage(name)
+
+    def tick(self, tokens: int = 1) -> None:
+        """Call once per generation step. Raises Stopped at the time limit, so the process and model survive."""
+        if self.generating_since is None:
+            return
+        self.tokens += tokens
+        if self.limit_s is not None and time.perf_counter() - self.generating_since >= self.limit_s:
+            raise Stopped()
 
     def out_path(self, name: str) -> str:
         """Path for an output file inside this request's out_dir."""

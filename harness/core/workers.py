@@ -148,7 +148,8 @@ class Worker:
         self.state = HOT
         return res
 
-    def run(self, ids: list[str], functions: list[str], inputs: list[dict], out_dirs: list[str]) -> list[asyncio.Future]:
+    def run(self, ids: list[str], functions: list[str], inputs: list[dict], out_dirs: list[str],
+            limit_s: float | None = None) -> list[asyncio.Future]:
         """One run message (k ids). Each request writes into its own out_dir (single-id) or a batch dir."""
         loop = asyncio.get_running_loop()
         futs = []
@@ -159,7 +160,7 @@ class Worker:
         self.state = BUSY
         self.last_used = time.monotonic()
         self.send({"type": "run", "ids": ids, "functions": functions, "inputs": inputs, "out_dir": out_dirs[0],
-                   "out_dirs": out_dirs})
+                   "out_dirs": out_dirs, "limit_s": limit_s})
         return futs
 
     def send(self, msg: dict) -> None:

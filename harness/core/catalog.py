@@ -40,6 +40,7 @@ class ModelDef:
     batching: bool = False
     thread_safe: bool = False
     mixed_functions: bool = False  # one batch may hold different functions
+    function_max: dict[str, int] = field(default_factory=dict)  # tuned batch limit per function
     vram_per_extra_gb: float = 0.0
     offload: str = "partial"
     compile_eligible: bool = True
@@ -202,9 +203,11 @@ class Catalog:
         cmax = int(conc.get("max", 1))
         per_extra = float(conc.get("vram_per_extra_gb", 0.0))
         batching, thread_safe = bool(conc.get("batching", False)), bool(conc.get("thread_safe", False))
+        function_max: dict[str, int] = {}
         tuned = tuning_mod.for_model(self.cfg, self._tuning, entry["name"], rt.get("device", "cuda:0"))
         if tuned and (batching or thread_safe):  # local bench result; the manifest says what is possible
             cmax, per_extra = int(tuned.get("max", cmax)), float(tuned.get("vram_per_extra_gb", per_extra))
+            function_max = {f: int(v["max"]) for f, v in (tuned.get("functions") or {}).items()}
         if cmax < 1 or (cmax > 1 and (per_extra <= 0 or not (batching or thread_safe))):
             raise ValueError("invalid concurrency block (max>1 needs vram_per_extra_gb>0 and batching or thread_safe)")
         entry_file = rt.get("entry", "adapter.py")
@@ -220,7 +223,7 @@ class Catalog:
             name=entry["name"], tags=tags, folder=folder, description=man.get("description", ""),
             functions=functions, entry=entry_file, device=rt.get("device", "cuda:0"),
             max_concurrency=cmax, batching=batching, thread_safe=thread_safe, vram_per_extra_gb=per_extra,
-            mixed_functions=bool(conc.get("mixed_functions", False)),
+            mixed_functions=bool(conc.get("mixed_functions", False)), function_max=function_max,
             offload=man.get("offload", "partial"),
             compile_eligible=(man.get("compile") or {}).get("eligible", True) is not False,
             runaway=duration((man.get("limits") or {}).get("runaway"), self.cfg.runaway),

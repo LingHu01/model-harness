@@ -197,7 +197,8 @@ class Runner:
     def _run(self, m: dict):
         ids, inputs, fns = m["ids"], m["inputs"], m["functions"]
         ctx = sdk.Context(**{**self.ctx.__dict__, "out_dir": m["out_dir"],
-                             "stage": lambda name: send({"type": "stage", "ids": ids, "name": name})})
+                             "stage": lambda name: send({"type": "stage", "ids": ids, "name": name}),
+                             "limit_s": m.get("limit_s")})
         torch = _torch()
         cuda = _cuda_ok(ctx.device)
         others_gb = 0.0
@@ -209,7 +210,10 @@ class Runner:
         recoveries: list[str] = []
         t = time.perf_counter()
         with ExtSampler(nvml.device_index(ctx.device), self.sampler_s) as samp:
-            results = self._call_with_recovery(fns, ids, inputs, ctx, recoveries)
+            try:
+                results = self._call_with_recovery(fns, ids, inputs, ctx, recoveries)
+            except sdk.Stopped:
+                results = [{"stopped": True}] * len(ids)
         duration = time.perf_counter() - t
         metrics = {
             "vram_peak_gb": self._torch_peak(),
@@ -221,6 +225,9 @@ class Runner:
             "placement": self._placement(),
             "oom_recoveries": recoveries,
         }
+        if ctx.generating_since is not None:
+            metrics["tokens"] = ctx.tokens
+            metrics["generating_s"] = round(time.perf_counter() - ctx.generating_since, 3)
         dev = nvml.memory(nvml.device_index(ctx.device)) if cuda else None
         if dev and metrics["vram_peak_gb"] and metrics["vram_peak_gb"] + others_gb > dev[0]:
             metrics["vram_spill"] = True  # Windows sysmem fallback: ran past the card's VRAM, very slow
@@ -252,6 +259,8 @@ class Runner:
         torch = _torch()
         try:
             return self._call(fns, inputs, ctx)
+        except sdk.Stopped:
+            raise
         except Exception as e:
             if not sdk.is_cuda_oom(e):
                 if len(inputs) == 1:

@@ -29,8 +29,8 @@ def http(method, path, body=None, timeout=300):
         return json.loads(e.read())
 
 
-def run(model, function, inputs, rid=None, events=None):
-    body = {"model": model, "function": function, "inputs": inputs}
+def run(model, function, inputs, rid=None, events=None, limit_s=None):
+    body = {"model": model, "function": function, "inputs": inputs, "limit_s": limit_s}
     if rid:
         body["request_id"] = rid
     req = urllib.request.Request(f"http://127.0.0.1:{PORT}/run", json.dumps(body).encode(), method="POST")
@@ -135,6 +135,7 @@ def main():
     u = http("POST", "/unload/echo-test")
     check("unload", u.get("was") == "loaded", str(u))
 
+    test_time_limit()
     test_reload()
     if GPU:
         gpu_tests()
@@ -172,6 +173,17 @@ def gpu_tests():
           f"{b1['r'].get('event')} / {r.get('event', r)}")
     http("POST", "/unload/torch-a")
     http("POST", "/unload/torch-b")
+
+
+def test_time_limit():
+    """A step of the bench: stop generating at the limit, without losing the worker."""
+    evs: list = []
+    pid = run("echo-test", "echo", {"text": "a"})["result"]["pid"]
+    r = run("echo-test", "echo", {"text": "b", "ticks": 1000}, events=evs, limit_s=0.2)
+    m = r.get("metrics", {})
+    check("limit: stops early", r.get("result", {}).get("stopped") is True and 0 < m.get("tokens", 0) < 1000, str(r)[:150])
+    check("limit: reports generating", any(e.get("event") == "stage" for e in evs))
+    check("limit: worker survives", run("echo-test", "echo", {"text": "c"})["result"]["pid"] == pid)
 
 
 def test_reload():
@@ -215,7 +227,7 @@ def test_reload():
         v1 = {f: (tmp / f).read_bytes() for f in ("manifest.yaml", "schemas/echo.json")}
 
         def drop_extra(name, keep):
-            mtext = v1["manifest.yaml"].decode("utf-8-sig").replace("extras: [sleep_s, crash]", f"extras: [{keep}]")
+            mtext = v1["manifest.yaml"].decode("utf-8-sig").replace("extras: [sleep_s, crash, ticks]", f"extras: [{keep}, ticks]")
             (tmp / "manifest.yaml").write_text(mtext, encoding="utf-8")
             schema = json.loads(v1["schemas/echo.json"].decode("utf-8-sig"))
             del schema["extras"][name]

@@ -209,7 +209,7 @@ class Core:
 
     async def _run(self, data, q, reader, writer):
         req = self.sched.submit(data.get("model", ""), data.get("function", ""), data.get("inputs") or {},
-                                data.get("request_id"))
+                                data.get("request_id"), data.get("limit_s"))
         writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nCache-Control: no-cache\r\n"
                      b"Connection: close\r\n\r\n")
         await writer.drain()

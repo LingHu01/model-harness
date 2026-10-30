@@ -50,15 +50,23 @@ class Adapter(sdk.BaseAdapter):
         # decoder_batch_size 1: the default of 16 decodes every object in an image together at full resolution.
         # 9 objects peaked at 24 GB and spilled past the card; one at a time took 7.7 GB and was 5x faster.
         self.engine = WeVisOneVL(ctx.weights_path, device=ctx.device, dtype="bfloat16", decoder_batch_size=1)
-        self._stage_ctx = None
+        self._stage_ctx = self._run_ctx = None
+        self._batch = 1
         model = self.engine.model
         (getattr(model, "visual", None) or model.model.visual).register_forward_hook(self._vision_done)
+        model.register_forward_pre_hook(self._step)
 
     def _vision_done(self, *_):
         """The image is encoded: preprocessing is over and token generation starts."""
         ctx, self._stage_ctx = self._stage_ctx, None
         if ctx:
+            self._run_ctx = ctx
             ctx.report_stage("generating")
+
+    def _step(self, *_):
+        """Every generation step passes here: count its tokens and honour the time limit."""
+        if self._run_ctx:
+            self._run_ctx.tick(self._batch)
 
     def run(self, function: str, inputs: dict, ctx: sdk.Context) -> dict:
         return self._one(function, inputs, ctx, idx=0)
@@ -70,7 +78,7 @@ class Adapter(sdk.BaseAdapter):
         """Batched generation (one padded generate call) with a prompt per request, so tasks can mix;
         masks are decoded per image afterwards, only for the responses that carry them."""
         from wevisone_vl import build_prompt
-        self._stage_ctx = ctx
+        self._stage_ctx, self._run_ctx, self._batch = ctx, None, len(inputs_list)
         missing = [f for f in functions if f not in TASKS]
         if missing:
             raise sdk.PluginError("unknown_function", missing[0])
@@ -92,7 +100,7 @@ class Adapter(sdk.BaseAdapter):
             raise sdk.PluginError("unknown_function", function)
         with Image.open(inputs["image"]) as im:
             image = im.convert("RGB")
-        self._stage_ctx = ctx
+        self._stage_ctx, self._run_ctx, self._batch = ctx, None, 1
         res = self.engine.predict(image, task=task, query=inputs.get("query", ""),
                                   decode_matting=function in ("segment", "matting"),
                                   max_new_tokens=int(inputs.get("max_new_tokens", 2048)), temperature=0.0)

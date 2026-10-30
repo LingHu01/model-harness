@@ -5,7 +5,7 @@ functions:
   - name: echo
     capability: test.echo
     summary: Return the input text (optionally after a delay).
-    extras: [sleep_s, crash]
+    extras: [sleep_s, crash, ticks]
     schema: schemas/echo.json
 runtime:
   entry: adapter.py
