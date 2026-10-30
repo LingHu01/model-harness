@@ -55,8 +55,22 @@ You need Windows, [uv](https://docs.astral.sh/uv/), Python 3.12, and an NVIDIA G
 
    The plugin's environment builds on its first run, so that call is slow.
 
+## Contributing
+
+Turn on the commit checks, which block API keys, email addresses and personal data:
+
+```bash
+git config core.hooksPath harness/tools/hooks
+```
+
+Commits need your GitHub noreply email. Keep private words to block in `secret-scan.local.txt` at the repo root, one per line. That file is never committed.
+
 ## Linux
 
 Only Windows is implemented. A Linux version would replace `core/os_win.py` with `core/os_linux.py`:
 child processes would use `PR_SET_PDEATHSIG` instead of a Job Object, and warm shells would pause with `SIGSTOP` and `SIGCONT`.
 Peak memory would come from `ru_maxrss`, and PyTorch could use `expandable_segments`.
+
+## License
+
+MIT

@@ -1,0 +1,5 @@
+#!/bin/sh
+root=$(git rev-parse --show-toplevel)
+py="$root/harness/.venv/Scripts/python.exe"
+[ -x "$py" ] || py=python
+exec "$py" "$root/harness/tools/secret_scan.py" --message "$1"

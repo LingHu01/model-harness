@@ -7,3 +7,4 @@ plugins/*/.harness-env.json
 # per machine
 /config.yaml
 /registry.yaml
+/secret-scan.local.txt
